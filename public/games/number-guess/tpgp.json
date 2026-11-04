@@ -1,0 +1,41 @@
+{
+  "$schema": "https://playbench.dev/schemas/tpgp-v1.json",
+  "tpgpVersion": "1.0.0",
+  "id": "number-guess",
+  "title": "Number Guess",
+  "tagline": "Deduce the secret number between 1 and 100 with hot & cold guidance.",
+  "description": "A tranquil single-player numerical deduction game. Guess the mystery number using warm/cold distance cues and track your fewest attempts.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Playbench Studio",
+    "url": "https://github.com/haikal-hafidz/the-playbench"
+  },
+  "runtime": {
+    "type": "iframe-bundle",
+    "entrypoint": "index.html",
+    "aspectRatio": "4:3",
+    "minWidth": 320,
+    "minHeight": 440,
+    "preferredWidth": 540,
+    "preferredHeight": 620
+  },
+  "players": {
+    "min": 1,
+    "max": 1,
+    "type": "solo"
+  },
+  "categories": ["puzzle", "logic"],
+  "tags": ["numbers", "deduction", "quick-play", "solo"],
+  "storage": {
+    "supportsSaves": true,
+    "saveSchemaVersion": "1.0",
+    "maxSaveSlots": 1
+  },
+  "capabilities": {
+    "offline": true,
+    "audio": false,
+    "touch": true,
+    "gamepad": false
+  },
+  "license": "MIT"
+}

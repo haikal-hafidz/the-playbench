@@ -1,0 +1,41 @@
+{
+  "$schema": "https://playbench.dev/schemas/tpgp-v1.json",
+  "tpgpVersion": "1.0.0",
+  "id": "memory-match",
+  "title": "Memory Match",
+  "tagline": "Turn and match paired craft stationery tokens on the bench.",
+  "description": "A delightful memory card-matching puzzle. Uncover pairs of craft workbench objects (scissors, dice, pins, pencil, rulers) with the fewest turns.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Playbench Studio",
+    "url": "https://github.com/haikal-hafidz/the-playbench"
+  },
+  "runtime": {
+    "type": "iframe-bundle",
+    "entrypoint": "index.html",
+    "aspectRatio": "4:3",
+    "minWidth": 320,
+    "minHeight": 480,
+    "preferredWidth": 580,
+    "preferredHeight": 640
+  },
+  "players": {
+    "min": 1,
+    "max": 1,
+    "type": "solo"
+  },
+  "categories": ["puzzle", "memory"],
+  "tags": ["cards", "memory", "tokens", "craft", "solo"],
+  "storage": {
+    "supportsSaves": true,
+    "saveSchemaVersion": "1.0",
+    "maxSaveSlots": 1
+  },
+  "capabilities": {
+    "offline": true,
+    "audio": false,
+    "touch": true,
+    "gamepad": false
+  },
+  "license": "MIT"
+}
