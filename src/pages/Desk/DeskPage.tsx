@@ -52,7 +52,7 @@ export const DeskPage: React.FC = () => {
     .slice(0, 4);
 
   const inDevelopment = projects
-    .filter((p) => p.status === 'in-development' || p.status === 'drafting')
+    .filter((p) => p.status === 'active' || p.status === 'draft')
     .slice(0, 3);
 
   return (
@@ -250,7 +250,7 @@ export const DeskPage: React.FC = () => {
                   title="No active development drafts"
                   description="Ready to bring a new game idea to life? The Workshop lets you write structured Creation Letters, manage task checklists, and export AI prompts."
                   primaryActionLabel="Start Creation Letter"
-                  onPrimaryAction={() => navigate('/workshop')}
+                  onPrimaryAction={() => navigate('/workshop?mode=create')}
                 />
               ) : (
                 <div style={{
@@ -359,7 +359,7 @@ export const DeskPage: React.FC = () => {
               </button>
 
               <button
-                onClick={() => navigate('/prompts')}
+                onClick={() => navigate('/workshop?mode=create')}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

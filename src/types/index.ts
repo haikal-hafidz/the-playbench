@@ -64,22 +64,101 @@ export interface Game {
   updatedAt: number;
 }
 
+export type ChecklistItemState = 'required' | 'optional' | 'not-needed' | 'to-be-decided';
+
 export interface ChecklistItem {
   id: string;
+  label: string;
+  state: ChecklistItemState;
+  completed: boolean;
+}
+
+export interface EntityField {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  required: boolean;
+  description?: string;
+}
+
+export interface CustomEntity {
+  name: string;
+  description: string;
+  fields: EntityField[];
+}
+
+export interface CreationLetter {
+  // A. Game Identity
   title: string;
-  status: 'required' | 'optional' | 'not-needed' | 'to-be-decided';
-  isCompleted: boolean;
-  category: 'gameplay' | 'art' | 'audio' | 'tpgp-compliance' | 'polish';
+  tagline: string;
+  targetAudience: string;
+  creativeVision: string;
+  objectives: string;
+  genre: string[];
+
+  // B. Gameplay Design
+  coreRules: string;
+  turnStructure: string; // turn, round, or session loops
+  winLossConditions: string;
+  edgeCases: string;
+
+  // C. Player Configuration
+  playerCountMin: number;
+  playerCountMax: number;
+  playStyle: 'solo' | 'pass-and-play' | 'shared-screen';
+  hostParticipation: boolean;
+  rolesOrTeams: string;
+
+  // D. Game Configuration
+  roundDurationMinutes: number;
+  totalRounds: number;
+  difficultyLevels: string;
+  configPresets: string;
+
+  // E. Data Architecture
+  entities: CustomEntity[];
+  storageStrategy: string; // e.g. IndexedDB saves, slot count
+
+  // F. Visual & Art Direction
+  artStyle: string;
+  layoutStructure: string;
+  animationPreferences: string;
+  accessibilityNotes: string;
+
+  // G. Technical Requirements & Constraints
+  runtimeType: 'html-standalone' | 'iframe-bundle';
+  offlineSupport: boolean;
+  constraints: string[];
+  notes?: string;
+}
+
+export interface ImprovementLetter {
+  targetGameId: string;
+  currentVersion: string;
+  targetVersion: string;
+  implementationAudit: string;
+  gameplayAdjustments: string;
+  scoringChanges: string;
+  dataArchitectureChanges: string;
+  uxImprovements: string;
+  bugReports: string[];
+  featureRequests: string[];
+  balanceAdjustments: string[];
+  acceptanceCriteria: string[];
+  revisionNotes: string;
 }
 
 export interface GameProject {
   id: string;
   title: string;
-  status: 'concept' | 'drafting' | 'in-development' | 'playtesting' | 'published' | 'archived';
-  type: 'new-game' | 'improvement';
+  status: 'draft' | 'active' | 'archived' | 'completed';
+  workflowType: 'creation' | 'improvement';
   targetGameId?: string;
   conceptNote?: string;
+  creationLetter?: CreationLetter;
+  improvementLetter?: ImprovementLetter;
   checklist: ChecklistItem[];
+  notes?: string;
+  briefMarkdown?: string;
   createdAt: number;
   updatedAt: number;
 }

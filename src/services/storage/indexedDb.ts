@@ -107,6 +107,18 @@ export class PlaybenchDB {
     });
   }
 
+  async getProject(id: string): Promise<GameProject | undefined> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('projects', 'readonly');
+      const store = tx.objectStore('projects');
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async saveProject(project: GameProject): Promise<void> {
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
@@ -117,6 +129,19 @@ export class PlaybenchDB {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving project'));
       tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving project'));
+    });
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('projects', 'readwrite');
+      const store = tx.objectStore('projects');
+      store.delete(id);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while deleting project'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while deleting project'));
     });
   }
 
