@@ -1,0 +1,138 @@
+/* Cutting Mat and Workbench Layout Specific Styles */
+
+.workbench-container {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The Green Cutting Mat (Main Hero Surface) */
+.cutting-mat {
+  position: relative;
+  background-color: var(--color-mat-base);
+  border: 10px solid var(--color-mat-edge);
+  border-radius: var(--radius-mat);
+  box-shadow: var(--shadow-cutting-mat);
+  overflow: hidden;
+  transition: var(--transition-tactile);
+}
+
+.cutting-mat.theme-classic-green {
+  background-color: #1b4731;
+  border-color: #123322;
+}
+
+.cutting-mat.theme-deep-forest {
+  background-color: #123824;
+  border-color: #0b2416;
+}
+
+.cutting-mat.theme-blueprint-blue {
+  background-color: #163e5c;
+  border-color: #0e273b;
+}
+
+.cutting-mat.theme-slate-charcoal {
+  background-color: #23282e;
+  border-color: #171b1f;
+}
+
+/* Background grid patterns on the mat */
+.cutting-mat-grid-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--color-mat-grid-minor) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-mat-grid-minor) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.cutting-mat-major-grid-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--color-mat-grid-major) 1.5px, transparent 1.5px),
+    linear-gradient(to bottom, var(--color-mat-grid-major) 1.5px, transparent 1.5px);
+  background-size: 100px 100px;
+}
+
+/* Angular Guidelines (30°, 45°, 60°) */
+.cutting-mat-angles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+/* Ruler numbers on cutting mat edges */
+.mat-ruler-edge {
+  position: absolute;
+  display: flex;
+  font-family: var(--font-family-craft);
+  font-size: 10px;
+  color: var(--color-mat-numbers);
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
+.mat-ruler-top {
+  top: 4px;
+  left: 30px;
+  right: 30px;
+  justify-content: space-between;
+}
+
+.mat-ruler-left {
+  top: 30px;
+  bottom: 30px;
+  left: 4px;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+/* Hybrid Physical Craft Card */
+.craft-card {
+  background: var(--color-paper-card);
+  border: 1px solid var(--color-paper-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-desk-card);
+  transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.18s ease;
+  position: relative;
+}
+
+.craft-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(10, 8, 5, 0.4), 0 2px 5px rgba(10, 8, 5, 0.25);
+}
+
+/* Sticky Note Accent */
+.craft-sticky-note {
+  background-color: var(--color-sticky-yellow);
+  color: #383318;
+  padding: 12px 16px;
+  box-shadow: var(--shadow-sticky-note);
+  border-bottom-right-radius: 12px;
+  font-family: var(--font-family-craft);
+  font-size: 12px;
+  line-height: 1.4;
+  position: relative;
+  transform: rotate(-1.5deg);
+  transition: transform 0.2s ease;
+}
+
+.craft-sticky-note:hover {
+  transform: rotate(0deg) scale(1.02);
+}
+
+/* Brass Clip / Pin Decoration */
+.brass-fastener {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff2a8, var(--color-brass-pin) 70%, #87621c);
+  box-shadow: var(--shadow-brass-pin);
+  position: absolute;
+}

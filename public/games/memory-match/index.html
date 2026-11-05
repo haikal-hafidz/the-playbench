@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory Match</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="card">
+    <header class="header">
+      <div class="badge">TABLETOP MEMORY</div>
+      <h1>Memory Match</h1>
+      <p class="subtitle">Flip cards to match craft workbench tokens.</p>
+    </header>
+
+    <div class="stats-row">
+      <div class="stat-box">
+        <span class="stat-label">MOVES</span>
+        <span class="stat-value" id="moves-count">0</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">PAIRS</span>
+        <span class="stat-value" id="pairs-count">0 / 6</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">BEST MOVES</span>
+        <span class="stat-value" id="best-moves">—</span>
+      </div>
+    </div>
+
+    <div id="status-banner" class="status-banner">Tap any card to uncover a token!</div>
+
+    <div id="grid" class="cards-grid"></div>
+
+    <footer class="footer">
+      <button id="restart-btn" class="btn secondary-btn">Shuffle & Deal</button>
+    </footer>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

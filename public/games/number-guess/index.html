@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Number Guess</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="card">
+    <header class="header">
+      <div class="badge">SOLO PUZZLE</div>
+      <h1>Number Guess</h1>
+      <p class="subtitle">Find the hidden number from 1 to 100.</p>
+    </header>
+
+    <div class="stats-row">
+      <div class="stat-box">
+        <span class="stat-label">ATTEMPTS</span>
+        <span class="stat-value" id="attempt-count">0</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-label">BEST RECORD</span>
+        <span class="stat-value" id="best-score">—</span>
+      </div>
+    </div>
+
+    <main class="gameplay">
+      <div class="feedback-area" id="feedback">Enter a guess to begin!</div>
+
+      <form id="guess-form" class="guess-form">
+        <input
+          type="number"
+          id="guess-input"
+          min="1"
+          max="100"
+          placeholder="1 - 100"
+          required
+          autocomplete="off"
+        />
+        <button type="submit" id="guess-btn" class="btn primary-btn">Guess</button>
+      </form>
+
+      <div class="history-section">
+        <div class="history-label">Previous Guesses:</div>
+        <div id="guess-history" class="guess-history">
+          <span class="empty-history">No guesses yet</span>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <button id="reset-btn" class="btn secondary-btn">New Game</button>
+    </footer>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

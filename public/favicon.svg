@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Cutting mat base -->
+  <rect x="4" y="4" width="56" height="56" rx="4" fill="#1b4d32" stroke="#e8c872" stroke-width="2"/>
+  <!-- Cutting mat grid -->
+  <path d="M4 18 H60 M4 32 H60 M4 46 H60 M18 4 V60 M32 4 V60 M46 4 V60" stroke="#2d6a45" stroke-width="1"/>
+  <!-- Diagonal guideline -->
+  <line x1="18" y1="46" x2="46" y2="18" stroke="#e8c872" stroke-width="1.5" stroke-dasharray="2 2"/>
+  <!-- Center craft dice / token -->
+  <rect x="25" y="25" width="14" height="14" rx="3" fill="#faf3e0" stroke="#333333" stroke-width="1.5"/>
+  <circle cx="28" cy="28" r="1.5" fill="#e63946"/>
+  <circle cx="36" cy="36" r="1.5" fill="#e63946"/>
+  <circle cx="32" cy="32" r="1.5" fill="#2d6a45"/>
+</svg>
