@@ -5,6 +5,27 @@ import { UserPreferences } from '../../types';
 
 const PREFS_KEY = 'playbench_prefs_v1';
 
+export type UserRole = 'host' | 'player';
+
+const USER_ROLE_KEY = 'playbench_user_role';
+
+export const getUserRole = (): UserRole => {
+  try {
+    const role = localStorage.getItem(USER_ROLE_KEY);
+    return role === 'player' ? 'player' : 'host';
+  } catch {
+    return 'host';
+  }
+};
+
+export const setUserRole = (role: UserRole): void => {
+  try {
+    localStorage.setItem(USER_ROLE_KEY, role);
+  } catch (err) {
+    console.error('Failed to set user role in localStorage.', err);
+  }
+};
+
 export const DEFAULT_PREFERENCES: UserPreferences = {
   cuttingMatTheme: 'classic-green',
   gridDensity: 'standard',

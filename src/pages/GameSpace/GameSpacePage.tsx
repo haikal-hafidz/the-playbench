@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -16,6 +16,8 @@ import { SandboxBridge } from '../../services/runtime';
 import { Game } from '../../types';
 import { CuttingMat } from '../../components/desk/CuttingMat';
 
+const LOAD_TIMEOUT_MS = 8000;
+
 export const GameSpacePage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -25,79 +27,151 @@ export const GameSpacePage: React.FC = () => {
   const [gameReady, setGameReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [iframeKey, setIframeKey] = useState<number>(0);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const bridgeRef = useRef<SandboxBridge>(new SandboxBridge());
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Clear timeout helper
+  const clearInitTimeout = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
+
+  // Reset state when game ID route changes to prevent stale data
   useEffect(() => {
     let isMounted = true;
+    clearInitTimeout();
+    bridgeRef.current.detach();
+
+    // Reset all game state immediately on id change
+    setGame(null);
+    setLoading(true);
+    setErrorMessage(null);
+    setGameReady(false);
+    setLastSavedTime(null);
+    setSaveError(null);
+    setIframeKey(k => k + 1);
 
     async function loadGame() {
-      setLoading(true);
-      setErrorMessage(null);
-      setGameReady(false);
-
       if (!id) {
-        setErrorMessage('No game identifier specified. Please select a game from the Collection.');
-        setLoading(false);
+        if (isMounted) {
+          setErrorMessage('No game identifier specified. Please select a game from the Collection.');
+          setLoading(false);
+        }
         return;
       }
 
-      const found = await gameRegistry.getGameById(id);
-      if (!isMounted) return;
+      try {
+        const found = await gameRegistry.getGameById(id);
+        if (!isMounted) return;
 
-      if (!found) {
-        setErrorMessage(`Game with identifier "${id}" could not be found in the registry.`);
+        if (!found) {
+          setErrorMessage(`Game with identifier "${id}" could not be found in the registry.`);
+          setLoading(false);
+          return;
+        }
+
+        setGame(found);
         setLoading(false);
-        return;
+
+        // Record play session
+        await gameRegistry.recordPlaySession(id);
+      } catch (err: any) {
+        if (isMounted) {
+          setErrorMessage(err?.message || 'Failed to load game from registry.');
+          setLoading(false);
+        }
       }
-
-      setGame(found);
-      setLoading(false);
-
-      // Record play session
-      await gameRegistry.recordPlaySession(id);
     }
 
     loadGame();
 
     return () => {
       isMounted = false;
+      clearInitTimeout();
       bridgeRef.current.detach();
     };
-  }, [id]);
+  }, [id, clearInitTimeout]);
 
-  // Attach sandbox bridge once iframe is mounted and game is loaded
+  // Set up initialization timeout and sandbox bridge
   useEffect(() => {
     if (!game || !iframeRef.current) return;
 
-    const detach = bridgeRef.current.attach(iframeRef.current, game.id, {
-      onReady: () => {
-        setGameReady(true);
-      },
-      onSaveConfirmed: () => {
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        setLastSavedTime(timeStr);
-      },
-      onGameOver: () => {
-        // Handled within game UI, acknowledged here
-      },
-      onError: (err) => {
-        console.warn(`Game emitted error: ${err.message}`);
-      },
-    });
+    clearInitTimeout();
 
-    return () => detach();
-  }, [game]);
+    // Start 8-second handshake timeout
+    timeoutRef.current = setTimeout(() => {
+      if (!gameReady) {
+        setErrorMessage(`Game "${game.title}" did not respond within ${LOAD_TIMEOUT_MS / 1000} seconds. It may be missing initialization scripts or failed to execute.`);
+      }
+    }, LOAD_TIMEOUT_MS);
+
+    const detach = bridgeRef.current.attach(
+      iframeRef.current,
+      game.id,
+      {
+        onMounted: () => {
+          // Handshake acknowledged; keep timeout active until onReady
+        },
+        onReady: () => {
+          clearInitTimeout();
+          setGameReady(true);
+          setErrorMessage(null);
+        },
+        onSaveConfirmed: () => {
+          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          setLastSavedTime(timeStr);
+          setSaveError(null);
+        },
+        onSaveError: (slot, err) => {
+          setSaveError(`Slot "${slot}": ${err}`);
+        },
+        onGameOver: () => {
+          // Handled within game UI, acknowledged here
+        },
+        onError: (err) => {
+          console.warn(`Game emitted error: ${err.message}`);
+        },
+      },
+      {
+        maxSaveSlots: game.storage?.maxSaveSlots,
+        gameVersion: game.version,
+      }
+    );
+
+    return () => {
+      clearInitTimeout();
+      detach();
+    };
+  }, [game, iframeKey, clearInitTimeout, gameReady]);
+
+  // Handle iframe load event to proactively trigger handshake if not already done
+  const handleIframeLoad = () => {
+    if (iframeRef.current && game) {
+      bridgeRef.current.dispatchInit(iframeRef.current, game.id, game.version);
+    }
+  };
+
+  const handleIframeError = () => {
+    clearInitTimeout();
+    setErrorMessage(`Failed to load game frame at: ${game?.runtime.entrypoint}`);
+  };
 
   const handleRestart = () => {
-    if (iframeRef.current && game) {
+    if (game) {
+      clearInitTimeout();
       setGameReady(false);
-      // Reload iframe src
-      const currentSrc = iframeRef.current.src;
-      iframeRef.current.src = currentSrc;
+      setErrorMessage(null);
+      setSaveError(null);
+      // Remount iframe cleanly with updated key
+      setIframeKey(k => k + 1);
     }
   };
 
@@ -142,7 +216,25 @@ export const GameSpacePage: React.FC = () => {
           </button>
 
           {game && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              {saveError && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-family-craft)',
+                  color: '#ff8585',
+                  backgroundColor: 'rgba(201, 59, 43, 0.2)',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  border: '1px solid rgba(201, 59, 43, 0.4)',
+                }}>
+                  <AlertTriangle size={12} color="#ff8585" />
+                  <span>{saveError}</span>
+                </div>
+              )}
+
               {lastSavedTime && (
                 <div style={{
                   display: 'flex',
@@ -237,19 +329,35 @@ export const GameSpacePage: React.FC = () => {
             <p style={{ fontSize: '13px', color: '#535c56', marginBottom: '20px' }}>
               {errorMessage}
             </p>
-            <button
-              onClick={() => navigate('/collection')}
-              style={{
-                backgroundColor: '#1b4731',
-                color: '#fcf8ee',
-                padding: '8px 16px',
-                borderRadius: '6px',
-                fontSize: '13px',
-                fontWeight: 600,
-              }}
-            >
-              Browse Available Games
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }}>
+              <button
+                onClick={handleRestart}
+                style={{
+                  backgroundColor: '#2b2118',
+                  color: '#fcf8ee',
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  border: '1px solid #4a3828',
+                }}
+              >
+                Try Again
+              </button>
+              <button
+                onClick={() => navigate('/collection')}
+                style={{
+                  backgroundColor: '#1b4731',
+                  color: '#fcf8ee',
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                }}
+              >
+                Browse Collection
+              </button>
+            </div>
           </div>
         )}
 
@@ -354,10 +462,13 @@ export const GameSpacePage: React.FC = () => {
               backgroundColor: '#1a1612',
             }}>
               <iframe
+                key={iframeKey}
                 ref={iframeRef}
                 src={game.runtime.entrypoint}
                 title={game.title}
                 sandbox="allow-scripts allow-forms allow-pointer-lock"
+                onLoad={handleIframeLoad}
+                onError={handleIframeError}
                 style={{
                   width: '100%',
                   height: '620px',
