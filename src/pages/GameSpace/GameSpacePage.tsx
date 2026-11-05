@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { gameRegistry } from '../../services/games';
 import { SandboxBridge } from '../../services/runtime';
+import { playbenchDB } from '../../services/storage';
 import { Game } from '../../types';
 import { CuttingMat } from '../../components/desk/CuttingMat';
 
@@ -23,6 +24,8 @@ export const GameSpacePage: React.FC = () => {
   const navigate = useNavigate();
 
   const [game, setGame] = useState<Game | null>(null);
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [resolvedSrcDoc, setResolvedSrcDoc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [gameReady, setGameReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -35,6 +38,7 @@ export const GameSpacePage: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const bridgeRef = useRef<SandboxBridge>(new SandboxBridge());
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const createdBlobUrlsRef = useRef<string[]>([]);
 
   // Clear timeout helper
   const clearInitTimeout = useCallback(() => {
@@ -44,14 +48,25 @@ export const GameSpacePage: React.FC = () => {
     }
   }, []);
 
+  // Revoke any created blob URLs
+  const cleanupBlobUrls = useCallback(() => {
+    for (const url of createdBlobUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    createdBlobUrlsRef.current = [];
+  }, []);
+
   // Reset state when game ID route changes to prevent stale data
   useEffect(() => {
     let isMounted = true;
     clearInitTimeout();
     bridgeRef.current.detach();
+    cleanupBlobUrls();
 
     // Reset all game state immediately on id change
     setGame(null);
+    setResolvedSrc(null);
+    setResolvedSrcDoc(null);
     setLoading(true);
     setErrorMessage(null);
     setGameReady(false);
@@ -79,7 +94,68 @@ export const GameSpacePage: React.FC = () => {
         }
 
         setGame(found);
-        setLoading(false);
+
+        // Check if package is imported from ZIP with files in IndexedDB
+        if (found.packageOrigin === 'imported-zip' || found.packageOrigin === 'imported-json' || found.packageOrigin === 'imported-url') {
+          const files = await playbenchDB.getPackageFiles(found.id);
+          if (files && files.length > 0) {
+            // Find entrypoint
+            const cleanEntry = found.runtime.entrypoint.replace(/^\.?\//, '');
+            const entryFile = files.find(f => f.filePath === cleanEntry || f.filePath.endsWith(cleanEntry));
+
+            if (entryFile) {
+              // Convert text or binary data to HTML string or Blob URL
+              let htmlContent: string;
+              if (typeof entryFile.data === 'string') {
+                htmlContent = entryFile.data;
+              } else {
+                const decoder = new TextDecoder('utf-8');
+                htmlContent = decoder.decode(entryFile.data);
+              }
+
+              // Embed other text assets (like style or script) into the HTML document if available
+              for (const asset of files) {
+                if (asset.filePath === entryFile.filePath) continue;
+                const assetBase = asset.filePath.split('/').pop() || '';
+                if (asset.mimeType.includes('css') || asset.filePath.endsWith('.css')) {
+                  const cssText = typeof asset.data === 'string' ? asset.data : new TextDecoder('utf-8').decode(asset.data);
+                  htmlContent = htmlContent.replace(
+                    new RegExp(`<link[^>]*href=["'][^"']*${assetBase}["'][^>]*>`, 'i'),
+                    `<style>${cssText}</style>`
+                  );
+                } else if (asset.mimeType.includes('javascript') || asset.filePath.endsWith('.js')) {
+                  const jsText = typeof asset.data === 'string' ? asset.data : new TextDecoder('utf-8').decode(asset.data);
+                  htmlContent = htmlContent.replace(
+                    new RegExp(`<script[^>]*src=["'][^"']*${assetBase}["'][^>]*>\\s*</script>`, 'i'),
+                    `<script>${jsText}</script>`
+                  );
+                }
+              }
+
+              if (isMounted) {
+                setResolvedSrcDoc(htmlContent);
+                setResolvedSrc(null);
+                setLoading(false);
+              }
+            } else {
+              if (isMounted) {
+                setResolvedSrc(found.runtime.entrypoint);
+                setLoading(false);
+              }
+            }
+          } else {
+            if (isMounted) {
+              setResolvedSrc(found.runtime.entrypoint);
+              setLoading(false);
+            }
+          }
+        } else {
+          // Bundled reference game
+          if (isMounted) {
+            setResolvedSrc(found.runtime.entrypoint);
+            setLoading(false);
+          }
+        }
 
         // Record play session
         await gameRegistry.recordPlaySession(id);
@@ -97,8 +173,9 @@ export const GameSpacePage: React.FC = () => {
       isMounted = false;
       clearInitTimeout();
       bridgeRef.current.detach();
+      cleanupBlobUrls();
     };
-  }, [id, clearInitTimeout]);
+  }, [id, clearInitTimeout, cleanupBlobUrls]);
 
   // Set up initialization timeout and sandbox bridge
   useEffect(() => {
@@ -464,7 +541,8 @@ export const GameSpacePage: React.FC = () => {
               <iframe
                 key={iframeKey}
                 ref={iframeRef}
-                src={game.runtime.entrypoint}
+                src={resolvedSrc || undefined}
+                srcDoc={resolvedSrcDoc || undefined}
                 title={game.title}
                 sandbox="allow-scripts allow-forms allow-pointer-lock"
                 onLoad={handleIframeLoad}

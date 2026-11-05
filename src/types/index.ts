@@ -171,3 +171,69 @@ export interface GameSave {
   version: string;
   savedAt: number;
 }
+
+export type ImportMethod = 'json' | 'zip' | 'url';
+
+export type ImportContentType =
+  | 'tpgp-manifest'
+  | 'tpgp-package'
+  | 'game-metadata'
+  | 'question-bank'
+  | 'answer-bank'
+  | 'custom-entities'
+  | 'unknown';
+
+export interface ValidationIssue {
+  field?: string;
+  message: string;
+}
+
+export interface ValidationResult {
+  status: 'valid' | 'valid-with-warnings' | 'invalid' | 'unsupported';
+  contentType: ImportContentType;
+  name?: string;
+  version?: string;
+  description?: string;
+  author?: GameAuthor;
+  entityCount?: number;
+  recordCount?: number;
+  warnings: string[];
+  errors: string[];
+  destination: 'games' | 'custom_datasets' | 'unsupported';
+  isPlayable: boolean;
+  runtimeEntrypoint?: string;
+  manifestData?: any;
+}
+
+export interface PackageFileRecord {
+  id: string; // `${packageId}:${filePath}`
+  packageId: string;
+  filePath: string;
+  mimeType: string;
+  data: ArrayBuffer | string; // binary assets as ArrayBuffer or text for scripts/html
+  size: number;
+}
+
+export interface CustomGameDataset {
+  id: string;
+  gameId?: string;
+  name: string;
+  contentType: ImportContentType;
+  version: string;
+  data: any;
+  importedAt: number;
+}
+
+export interface ImportRecord {
+  id: string;
+  name: string;
+  importMethod: ImportMethod;
+  source: string; // filename or url
+  contentType: ImportContentType;
+  version?: string;
+  status: 'success' | 'failed' | 'cancelled';
+  validationResult: ValidationResult;
+  failureReason?: string;
+  registeredGameId?: string;
+  importedAt: number;
+}
