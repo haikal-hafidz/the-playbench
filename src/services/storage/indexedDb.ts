@@ -65,6 +65,7 @@ export class PlaybenchDB {
       const req = store.getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -76,6 +77,7 @@ export class PlaybenchDB {
       const req = store.get(id);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -84,9 +86,11 @@ export class PlaybenchDB {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('games', 'readwrite');
       const store = tx.objectStore('games');
-      const req = store.put(game);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      store.put(game);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving game'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving game'));
     });
   }
 
@@ -99,6 +103,7 @@ export class PlaybenchDB {
       const req = store.getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -107,9 +112,11 @@ export class PlaybenchDB {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('projects', 'readwrite');
       const store = tx.objectStore('projects');
-      const req = store.put(project);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      store.put(project);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving project'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving project'));
     });
   }
 
@@ -122,6 +129,20 @@ export class PlaybenchDB {
       const req = store.get(`${gameId}:${slotId}`);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getSavesForGame(gameId: string): Promise<GameSave[]> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('game_saves', 'readonly');
+      const store = tx.objectStore('game_saves');
+      const index = store.index('by_game');
+      const req = index.getAll(gameId);
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -130,9 +151,11 @@ export class PlaybenchDB {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('game_saves', 'readwrite');
       const store = tx.objectStore('game_saves');
-      const req = store.put(save);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      store.put(save);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while writing save'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while writing save'));
     });
   }
 }

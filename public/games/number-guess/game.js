@@ -5,6 +5,7 @@
   let bestScore = null;
   let guesses = [];
   let isGameOver = false;
+  let isInitialized = false;
 
   const attemptCountEl = document.getElementById('attempt-count');
   const bestScoreEl = document.getElementById('best-score');
@@ -33,29 +34,59 @@
     }
   }
 
+  function applyRestoredState(saveState) {
+    if (saveState && typeof saveState === 'object') {
+      if (typeof saveState.bestScore === 'number' && Number.isFinite(saveState.bestScore)) {
+        bestScore = saveState.bestScore;
+        bestScoreEl.textContent = bestScore;
+      }
+    }
+  }
+
+  function finishInitialization(saveState) {
+    if (isInitialized) return;
+    applyRestoredState(saveState);
+    isInitialized = true;
+
+    // Signal game is loaded and ready
+    sendToPlatform('PLAYBENCH_READY', {
+      ready: true,
+      title: 'Number Guess',
+      version: '1.0.0',
+    });
+  }
+
   // Handle messages from Playbench Platform
   window.addEventListener('message', function (event) {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
+    if (data.source !== 'playbench-host') return;
 
-    if (data.type === 'PLAYBENCH_INIT' || data.type === 'PLAYBENCH_RESTORE_SAVE') {
-      const state = data.payload && data.payload.saveState;
-      if (state && typeof state.bestScore === 'number') {
-        bestScore = state.bestScore;
-        bestScoreEl.textContent = bestScore;
+    if (data.type === 'PLAYBENCH_INIT') {
+      const saveState = data.payload ? data.payload.saveState : null;
+      finishInitialization(saveState);
+    } else if (data.type === 'PLAYBENCH_RESTORE_SAVE') {
+      const saveState = data.payload ? data.payload.saveState : null;
+      applyRestoredState(saveState);
+    } else if (data.type === 'PLAYBENCH_SAVE_RESULT') {
+      if (!data.payload || !data.payload.success) {
+        console.warn('Playbench save rejected:', data.payload ? data.payload.error : 'Unknown error');
       }
     }
   });
 
-  // Signal game is loaded and ready
-  sendToPlatform('PLAYBENCH_READY', {
-    ready: true,
-    title: 'Number Guess',
+  // Signal bridge that game script has mounted and is awaiting init
+  sendToPlatform('PLAYBENCH_MOUNTED', {
+    gameId: 'number-guess',
     version: '1.0.0',
   });
 
-  // Request save data on start
-  sendToPlatform('PLAYBENCH_REQUEST_SAVE', { slot: 'default' });
+  // Fallback: If running standalone without host, initialize after 500ms
+  setTimeout(function () {
+    if (!isInitialized) {
+      finishInitialization(null);
+    }
+  }, 500);
 
   function updateHistoryView() {
     if (guesses.length === 0) {
@@ -98,9 +129,10 @@
         bestScore = attempts;
         bestScoreEl.textContent = bestScore;
 
-        // Save via platform bridge
+        // Save via platform bridge with schemaVersion
         sendToPlatform('PLAYBENCH_SAVE_REQUEST', {
           slot: 'default',
+          schemaVersion: '1.0.0',
           state: { bestScore: bestScore },
         });
       }

@@ -8,6 +8,7 @@
   let moves = 0;
   let bestMoves = null;
   let isLocked = false;
+  let isInitialized = false;
 
   const gridEl = document.getElementById('grid');
   const movesEl = document.getElementById('moves-count');
@@ -30,26 +31,58 @@
     }
   }
 
+  function applyRestoredState(saveState) {
+    if (saveState && typeof saveState === 'object') {
+      if (typeof saveState.bestMoves === 'number' && Number.isFinite(saveState.bestMoves)) {
+        bestMoves = saveState.bestMoves;
+        bestMovesEl.textContent = bestMoves;
+      }
+    }
+  }
+
+  function finishInitialization(saveState) {
+    if (isInitialized) return;
+    applyRestoredState(saveState);
+    isInitialized = true;
+
+    // Signal game is loaded and ready
+    sendToPlatform('PLAYBENCH_READY', {
+      ready: true,
+      title: 'Memory Match',
+      version: '1.0.0',
+    });
+  }
+
   window.addEventListener('message', function (event) {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
+    if (data.source !== 'playbench-host') return;
 
-    if (data.type === 'PLAYBENCH_INIT' || data.type === 'PLAYBENCH_RESTORE_SAVE') {
-      const state = data.payload && data.payload.saveState;
-      if (state && typeof state.bestMoves === 'number') {
-        bestMoves = state.bestMoves;
-        bestMovesEl.textContent = bestMoves;
+    if (data.type === 'PLAYBENCH_INIT') {
+      const saveState = data.payload ? data.payload.saveState : null;
+      finishInitialization(saveState);
+    } else if (data.type === 'PLAYBENCH_RESTORE_SAVE') {
+      const saveState = data.payload ? data.payload.saveState : null;
+      applyRestoredState(saveState);
+    } else if (data.type === 'PLAYBENCH_SAVE_RESULT') {
+      if (!data.payload || !data.payload.success) {
+        console.warn('Playbench save rejected:', data.payload ? data.payload.error : 'Unknown error');
       }
     }
   });
 
-  sendToPlatform('PLAYBENCH_READY', {
-    ready: true,
-    title: 'Memory Match',
+  // Signal bridge that game script has mounted and is awaiting init
+  sendToPlatform('PLAYBENCH_MOUNTED', {
+    gameId: 'memory-match',
     version: '1.0.0',
   });
 
-  sendToPlatform('PLAYBENCH_REQUEST_SAVE', { slot: 'default' });
+  // Fallback: If running standalone without host, initialize after 500ms
+  setTimeout(function () {
+    if (!isInitialized) {
+      finishInitialization(null);
+    }
+  }, 500);
 
   function shuffle(array) {
     const arr = array.slice();
@@ -144,6 +177,7 @@
 
       sendToPlatform('PLAYBENCH_SAVE_REQUEST', {
         slot: 'default',
+        schemaVersion: '1.0.0',
         state: { bestMoves: bestMoves },
       });
     }

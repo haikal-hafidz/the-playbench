@@ -53,6 +53,11 @@ export interface Game {
   tags: string[];
   offlineCapable: boolean;
   packageOrigin: 'bundled' | 'imported-zip' | 'imported-url' | 'imported-json';
+  storage?: {
+    supportsSaves?: boolean;
+    saveSchemaVersion?: string;
+    maxSaveSlots?: number;
+  };
   lastPlayedAt?: number;
   playCount: number;
   createdAt: number;
