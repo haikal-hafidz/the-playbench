@@ -237,3 +237,66 @@ export interface ImportRecord {
   registeredGameId?: string;
   importedAt: number;
 }
+
+// Stage 5: Prompt Station Types
+export type TargetAgent = 'jules' | 'claude' | 'chatgpt' | 'other';
+
+export type PromptTemplateId =
+  | 'game-creation'
+  | 'game-improvement'
+  | 'game-integration'
+  | 'game-debugging'
+  | 'game-testing'
+  | 'tpgp-protocol'
+  | 'new-feature'
+  | 'bug-fix'
+  | 'investigate-issue'
+  | 'refactor'
+  | 'ui-ux'
+  | 'code-review'
+  | 'testing-qa'
+  | 'feature-integration';
+
+export interface PromptTemplate {
+  id: PromptTemplateId;
+  name: string;
+  category: 'tpgp' | 'general';
+  description: string;
+  defaultTitle: string;
+  defaultTaskObjective: string;
+  defaultScopeOfWork: string;
+  defaultRequiredFunctionality: string[];
+  defaultConstraints: string[];
+  defaultRelevantFiles: string[];
+  defaultInstructions: string[];
+  defaultVerificationRequirements: string[];
+  defaultDeliverables: string[];
+}
+
+export interface PromptFormState {
+  title: string;
+  targetAgent: TargetAgent;
+  templateId: PromptTemplateId;
+  projectContext: string;
+  taskObjective: string;
+  existingImplementation: string;
+  scopeOfWork: string;
+  requiredFunctionality: string[];
+  constraints: string[];
+  relevantFiles: string[];
+  instructions: string[];
+  verificationRequirements: string[];
+  deliverables: string[];
+  customOutput?: string;
+}
+
+export interface SavedPrompt {
+  id: string;
+  title: string;
+  targetAgent: TargetAgent;
+  templateId: PromptTemplateId;
+  formState: PromptFormState;
+  generatedText: string;
+  createdAt: number;
+  updatedAt: number;
+}
