@@ -64,6 +64,64 @@ export interface Game {
   updatedAt: number;
 }
 
+// Stage 6: Cloud Backup & Sync Types
+export interface BackupMetadata {
+  id: string;
+  userId?: string;
+  name: string;
+  createdAt: number;
+  schemaVersion: number;
+  appVersion: string;
+  checksum: string;
+  counts: {
+    games: number;
+    projects: number;
+    gameSaves: number;
+    savedPrompts: number;
+    importHistory: number;
+    packageFiles: number;
+    customDatasets: number;
+  };
+  sizeBytes?: number;
+}
+
+export interface PlaybenchBackupPayload {
+  schemaVersion: number; // 1
+  appVersion: string; // e.g. '0.1.0'
+  timestamp: number;
+  checksum: string; // SHA-256
+  metadata: BackupMetadata;
+  stores: {
+    games: Game[];
+    projects: GameProject[];
+    gameSaves: GameSave[];
+    savedPrompts: SavedPrompt[];
+    importHistory: ImportRecord[];
+    packageFiles: PackageFileRecord[];
+    customDatasets: CustomGameDataset[];
+  };
+  preferences: UserPreferences;
+}
+
+export type SyncStatus =
+  | 'idle'
+  | 'checking'
+  | 'syncing'
+  | 'conflict'
+  | 'error'
+  | 'offline';
+
+export interface SyncConflict {
+  id: string;
+  localTimestamp: number;
+  remoteTimestamp: number;
+  localMetadata: BackupMetadata;
+  remoteMetadata: BackupMetadata;
+  remotePayload: PlaybenchBackupPayload;
+}
+
+export type SyncConflictResolution = 'keep-local' | 'take-remote' | 'cancel';
+
 export type ChecklistItemState = 'required' | 'optional' | 'not-needed' | 'to-be-decided';
 
 export interface ChecklistItem {
