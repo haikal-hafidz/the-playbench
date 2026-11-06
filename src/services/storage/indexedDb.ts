@@ -1,10 +1,10 @@
 /**
  * IndexedDB Database Service for The Playbench (playbench_db)
  */
-import { Game, GameProject, GameSave } from '../../types';
+import { Game, GameProject, GameSave, ImportRecord, PackageFileRecord, CustomGameDataset } from '../../types';
 
 const DB_NAME = 'playbench_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export class PlaybenchDB {
   private dbPromise: Promise<IDBDatabase> | null = null;
@@ -46,6 +46,28 @@ export class PlaybenchDB {
         // Prompt Templates Store
         if (!db.objectStoreNames.contains('prompt_templates')) {
           db.createObjectStore('prompt_templates', { keyPath: 'id' });
+        }
+
+        // Stage 4: Import History Store
+        if (!db.objectStoreNames.contains('import_history')) {
+          const importStore = db.createObjectStore('import_history', { keyPath: 'id' });
+          importStore.createIndex('by_method', 'importMethod');
+          importStore.createIndex('by_status', 'status');
+          importStore.createIndex('by_imported_at', 'importedAt');
+        }
+
+        // Stage 4: Package Files Store (for extracted ZIP packages)
+        if (!db.objectStoreNames.contains('package_files')) {
+          const fileStore = db.createObjectStore('package_files', { keyPath: 'id' });
+          fileStore.createIndex('by_package', 'packageId');
+          fileStore.createIndex('by_filepath', 'filePath');
+        }
+
+        // Stage 4: Custom Game Datasets Store
+        if (!db.objectStoreNames.contains('custom_datasets')) {
+          const dataStore = db.createObjectStore('custom_datasets', { keyPath: 'id' });
+          dataStore.createIndex('by_content_type', 'contentType');
+          dataStore.createIndex('by_game', 'gameId');
         }
       };
 
@@ -181,6 +203,128 @@ export class PlaybenchDB {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error('Transaction failed while writing save'));
       tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while writing save'));
+    });
+  }
+
+  // Stage 4: Import History Methods
+  async getAllImportRecords(): Promise<ImportRecord[]> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('import_history', 'readonly');
+      const store = tx.objectStore('import_history');
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async saveImportRecord(record: ImportRecord): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('import_history', 'readwrite');
+      const store = tx.objectStore('import_history');
+      store.put(record);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving import record'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving import record'));
+    });
+  }
+
+  async deleteImportRecord(id: string): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('import_history', 'readwrite');
+      const store = tx.objectStore('import_history');
+      store.delete(id);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while deleting import record'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while deleting import record'));
+    });
+  }
+
+  // Stage 4: Package Files Methods
+  async savePackageFiles(files: PackageFileRecord[]): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('package_files', 'readwrite');
+      const store = tx.objectStore('package_files');
+      for (const file of files) {
+        store.put(file);
+      }
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving package files'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving package files'));
+    });
+  }
+
+  async getPackageFiles(packageId: string): Promise<PackageFileRecord[]> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('package_files', 'readonly');
+      const store = tx.objectStore('package_files');
+      const index = store.index('by_package');
+      const req = index.getAll(packageId);
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getPackageFile(packageId: string, filePath: string): Promise<PackageFileRecord | undefined> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('package_files', 'readonly');
+      const store = tx.objectStore('package_files');
+      const req = store.get(`${packageId}:${filePath}`);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async deletePackageFiles(packageId: string): Promise<void> {
+    const db = await this.openDB();
+    const files = await this.getPackageFiles(packageId);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('package_files', 'readwrite');
+      const store = tx.objectStore('package_files');
+      for (const f of files) {
+        store.delete(f.id);
+      }
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while deleting package files'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while deleting package files'));
+    });
+  }
+
+  // Stage 4: Custom Datasets Methods
+  async saveCustomDataset(dataset: CustomGameDataset): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('custom_datasets', 'readwrite');
+      const store = tx.objectStore('custom_datasets');
+      store.put(dataset);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving custom dataset'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving custom dataset'));
+    });
+  }
+
+  async getAllCustomDatasets(): Promise<CustomGameDataset[]> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('custom_datasets', 'readonly');
+      const store = tx.objectStore('custom_datasets');
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
     });
   }
 }
