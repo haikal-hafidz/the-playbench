@@ -184,8 +184,16 @@ CREATE TABLE IF NOT EXISTS public.session_participants (
 );
 
 -- Idempotent column additions and legacy data migration for session_participants
-DO $$
+DO $
 BEGIN
+    -- Ensure columns used by the legacy data migration exist before updating rows.
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'is_connected'
+    ) THEN
+        ALTER TABLE public.session_participants ADD COLUMN is_connected BOOLEAN DEFAULT true;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'participant_token_hash'
@@ -223,13 +231,7 @@ BEGIN
         ALTER TABLE public.session_participants ADD COLUMN original_name VARCHAR(40);
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'is_connected'
-    ) THEN
-        ALTER TABLE public.session_participants ADD COLUMN is_connected BOOLEAN DEFAULT true;
-    END IF;
-END $$;
+END $;
 
 CREATE INDEX IF NOT EXISTS idx_session_participants_session ON public.session_participants (session_id);
 
