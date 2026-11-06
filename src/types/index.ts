@@ -64,6 +64,9 @@ export interface Game {
   updatedAt: number;
 }
 
+// Stage 7: Multiplayer & Voting Types
+export * from './multiplayer';
+
 // Stage 6: Cloud Backup & Sync Types
 export interface BackupMetadata {
   id: string;

@@ -164,6 +164,68 @@ export class GameRegistry {
     await this.init();
     await playbenchDB.saveGame(game);
   }
+
+  /**
+   * Validates if a game can safely be deleted.
+   * Checks if it is active in any multiplayer session or workshop project.
+   */
+  async canDeleteGame(id: string): Promise<{ safe: boolean; reason?: string }> {
+    await this.init();
+    const game = await this.getGameById(id);
+    if (!game) {
+      return { safe: false, reason: 'Game not found in registry.' };
+    }
+
+    // Bundled games cannot be deleted to preserve core platform experience
+    if (game.packageOrigin === 'bundled') {
+      return { safe: false, reason: 'Bundled workshop games cannot be deleted.' };
+    }
+
+    // Check active projects referencing this game
+    try {
+      const projects = await playbenchDB.getAllProjects();
+      const referencingProject = projects.find(
+        (p) => p.targetGameId === id && (p.status === 'draft' || p.status === 'active')
+      );
+      if (referencingProject) {
+        return {
+          safe: false,
+          reason: `Game is referenced by active Workshop project: "${referencingProject.title}". Archive or complete the project first.`,
+        };
+      }
+    } catch {
+      // Continue if project store check fails
+    }
+
+    // Check active multiplayer session in local storage / session state
+    try {
+      const activeSessionRaw = localStorage.getItem('playbench_active_session');
+      if (activeSessionRaw) {
+        const activeSession = JSON.parse(activeSessionRaw);
+        if (activeSession.game_id === id && activeSession.status !== 'completed') {
+          return {
+            safe: false,
+            reason: `Game is currently in use by an active multiplayer session (${activeSession.code}). End the session before deleting.`,
+          };
+        }
+      }
+    } catch {
+      // Continue
+    }
+
+    return { safe: true };
+  }
+
+  /**
+   * Safely deletes a game and its associated saves and package assets
+   */
+  async deleteGame(id: string): Promise<void> {
+    const check = await this.canDeleteGame(id);
+    if (!check.safe) {
+      throw new Error(check.reason || 'Cannot delete game.');
+    }
+    await playbenchDB.deleteGame(id);
+  }
 }
 
 export const gameRegistry = new GameRegistry();

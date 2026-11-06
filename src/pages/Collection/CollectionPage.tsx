@@ -7,7 +7,10 @@ import {
   SlidersHorizontal,
   Clock,
   Tag,
-  Users
+  Users,
+  Trash2,
+  AlertTriangle,
+  X
 } from 'lucide-react';
 import { gameRegistry } from '../../services/games';
 import { Game } from '../../types';
@@ -24,6 +27,12 @@ export const CollectionPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'name' | 'plays'>('recent');
+
+  // Deletion modal state
+  const [deletingGame, setDeletingGame] = useState<Game | null>(null);
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -77,8 +86,158 @@ export const CollectionPage: React.FC = () => {
       });
   }, [games, searchQuery, selectedCategory, sortBy]);
 
+  const handleDeleteGame = async () => {
+    if (!deletingGame) return;
+    if (deleteConfirmationText !== 'DELETE') {
+      setDeleteError('Please type DELETE to confirm.');
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await gameRegistry.deleteGame(deletingGame.id);
+      setGames((prev) => prev.filter((g) => g.id !== deletingGame.id));
+      setDeletingGame(null);
+      setDeleteConfirmationText('');
+    } catch (err: any) {
+      setDeleteError(err.message || 'Failed to delete game.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: '1440px', margin: '0 auto', padding: '24px 20px 48px 20px' }}>
+      {/* Safe Delete Game Confirmation Modal */}
+      {deletingGame && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '20px',
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#261e17',
+              border: '2px solid #752828',
+              borderRadius: '12px',
+              padding: '28px',
+              maxWidth: '480px',
+              width: '100%',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fca5a5' }}>
+                <AlertTriangle size={20} />
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>
+                  Safe Game Deletion
+                </h3>
+              </div>
+              <button
+                onClick={() => {
+                  setDeletingGame(null);
+                  setDeleteConfirmationText('');
+                  setDeleteError(null);
+                }}
+                style={{ background: 'none', border: 'none', color: '#b0a695', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p style={{ color: '#d0c6b6', fontSize: '13px', lineHeight: 1.5, marginBottom: '16px' }}>
+              Are you sure you want to remove <strong>{deletingGame.title}</strong>? This action will permanently remove the game record, its save data, and extracted package files from local storage.
+            </p>
+
+            {deleteError && (
+              <div
+                style={{
+                  backgroundColor: '#451a1a',
+                  border: '1px solid #752828',
+                  borderRadius: '6px',
+                  padding: '10px 12px',
+                  marginBottom: '16px',
+                  color: '#fecaca',
+                  fontSize: '12px',
+                }}
+              >
+                {deleteError}
+              </div>
+            )}
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '12px', color: '#d0c6b6', marginBottom: '6px' }}>
+                Type <strong>DELETE</strong> below to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmationText}
+                onChange={(e) => setDeleteConfirmationText(e.target.value)}
+                placeholder="DELETE"
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  backgroundColor: '#1b1612',
+                  border: '1px solid #752828',
+                  borderRadius: '6px',
+                  color: '#fcf8ee',
+                  fontSize: '13px',
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                onClick={() => {
+                  setDeletingGame(null);
+                  setDeleteConfirmationText('');
+                  setDeleteError(null);
+                }}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#3d2f24',
+                  border: 'none',
+                  borderRadius: '6px',
+                  color: '#d0c6b6',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={handleDeleteGame}
+                disabled={isDeleting || deleteConfirmationText !== 'DELETE'}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  backgroundColor: deleteConfirmationText === 'DELETE' ? '#991b1b' : '#451a1a',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: deleteConfirmationText === 'DELETE' ? 'pointer' : 'not-allowed',
+                }}
+              >
+                <Trash2 size={14} />
+                <span>{isDeleting ? 'Deleting...' : 'Delete Game'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <CuttingMat>
         {/* Header Title Section */}
         <div style={{
@@ -311,6 +470,34 @@ export const CollectionPage: React.FC = () => {
                       <Clock size={11} />
                       <span>{new Date(game.lastPlayedAt).toLocaleDateString()}</span>
                     </div>
+                  )}
+
+                  {/* Safe Deletion trigger button */}
+                  {game.packageOrigin !== 'bundled' && (
+                    <button
+                      title="Safely Delete Game"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeletingGame(game);
+                        setDeleteConfirmationText('');
+                        setDeleteError(null);
+                      }}
+                      style={{
+                        marginLeft: 'auto',
+                        background: 'none',
+                        border: 'none',
+                        color: '#991b1b',
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '2px',
+                        fontSize: '11px',
+                      }}
+                    >
+                      <Trash2 size={12} />
+                      <span>Delete</span>
+                    </button>
                   )}
                 </div>
               </CraftCard>

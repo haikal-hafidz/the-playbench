@@ -124,6 +124,42 @@ export class PlaybenchDB {
     });
   }
 
+  async deleteGame(id: string): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['games', 'game_saves', 'package_files'], 'readwrite');
+      const gameStore = tx.objectStore('games');
+      const saveStore = tx.objectStore('game_saves');
+      const pkgStore = tx.objectStore('package_files');
+
+      gameStore.delete(id);
+
+      // Clean up game saves
+      const saveIndex = saveStore.index('by_game');
+      const saveReq = saveIndex.getAllKeys(id);
+      saveReq.onsuccess = () => {
+        const keys = saveReq.result || [];
+        for (const k of keys) {
+          saveStore.delete(k);
+        }
+      };
+
+      // Clean up package files if packageId equals id
+      const pkgIndex = pkgStore.index('by_package');
+      const pkgReq = pkgIndex.getAllKeys(id);
+      pkgReq.onsuccess = () => {
+        const keys = pkgReq.result || [];
+        for (const k of keys) {
+          pkgStore.delete(k);
+        }
+      };
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while deleting game'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while deleting game'));
+    });
+  }
+
   // Projects methods
   async getAllProjects(): Promise<GameProject[]> {
     const db = await this.openDB();
