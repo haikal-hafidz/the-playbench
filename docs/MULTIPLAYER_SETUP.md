@@ -2,7 +2,7 @@
 
 Stage 7 implements cross-device real-time multiplayer sessions powered by Supabase.
 
-This document outlines the PostgreSQL schema, Zero-Trust Row Level Security (RLS) lock, hardened Security Definer RPC functions, and Realtime Broadcast architecture required for The Playbench Multiplayer engine.
+This document outlines the PostgreSQL schema, Zero-Trust Row Level Security (RLS) lock, hardened Security Definer RPC functions, upgrade path for existing databases, and Realtime Broadcast architecture required for The Playbench Multiplayer engine.
 
 ---
 
@@ -37,9 +37,25 @@ In anonymous multiplayer systems, providing direct table `SELECT` via `USING (tr
 
 ---
 
-## 2. PostgreSQL DDL Migrations & Safe Upgrade (Idempotent)
+## 2. Legacy Migration & Existing Data Handling (Important)
 
-Run the following SQL migration script in your Supabase SQL Editor. This script is fully idempotent and safely upgrades existing databases without dropping existing data.
+When upgrading an existing database that already contains tables and rows:
+1. **Handling Missing / NULL / Empty Secrets**:
+   - **Active Sessions Without Secrets:** If existing rows have `host_secret IS NULL` or `host_secret = ''`, it is impossible to securely authenticate an anonymous host under the Zero-Trust model. These active sessions are explicitly updated to `'completed'`, terminating the legacy session cleanly. They are assigned an unguessable placeholder SHA-256 hash so the `NOT NULL` constraint succeeds.
+   - **Sessions With Valid Secrets:** Where a non-empty `host_secret` exists, its SHA-256 hash is computed and stored in `host_secret_hash`. The host on their original device (holding the plaintext secret in localStorage) continues to be authenticated.
+   - **Participants Without Tokens:** Any legacy participant record with `participant_token IS NULL` or `participant_token = ''` is marked as `is_connected = false` and assigned an unguessable placeholder SHA-256 hash. This prevents orphaned or unauthorized resurrection while satisfying the `NOT NULL` constraint.
+2. **Handling Legacy Status Enums**:
+   - Earlier prototype versions may have stored statuses such as `'lobby'`. The migration safely normalizes any `'lobby'` records to `'voting'` before re-applying the check constraint.
+3. **Idempotency & Re-runnability**:
+   - The migration checks column existence before adding columns or migrating data.
+   - Constraints, indexes, and RLS policies are dropped if they exist before being created.
+   - The script can be executed multiple times without errors or data corruption.
+
+---
+
+## 3. PostgreSQL DDL Migrations & Safe Upgrade (Idempotent)
+
+Run the following SQL migration script in your Supabase SQL Editor.
 
 ```sql
 -- =============================================================================
@@ -48,7 +64,7 @@ Run the following SQL migration script in your Supabase SQL Editor. This script 
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 1. Create multiplayer_sessions
+-- 1. Create multiplayer_sessions if not existing
 CREATE TABLE IF NOT EXISTS public.multiplayer_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code VARCHAR(8) UNIQUE NOT NULL,
@@ -67,28 +83,72 @@ CREATE TABLE IF NOT EXISTS public.multiplayer_sessions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
--- Idempotent column additions for existing installations
+-- Idempotent column additions and legacy data migration for multiplayer_sessions
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'host_secret_hash') THEN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'host_secret') THEN
-            ALTER TABLE public.multiplayer_sessions ADD COLUMN host_secret_hash TEXT;
-            UPDATE public.multiplayer_sessions SET host_secret_hash = encode(digest(host_secret, 'sha256'), 'hex');
-            ALTER TABLE public.multiplayer_sessions ALTER COLUMN host_secret_hash SET NOT NULL;
+    -- Add host_secret_hash if not existing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'host_secret_hash'
+    ) THEN
+        ALTER TABLE public.multiplayer_sessions ADD COLUMN host_secret_hash TEXT;
+
+        -- Check if legacy host_secret column exists
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'host_secret'
+        ) THEN
+            -- 1. Migrate rows with valid, non-empty host_secret
+            UPDATE public.multiplayer_sessions
+            SET host_secret_hash = encode(digest(host_secret, 'sha256'), 'hex')
+            WHERE host_secret IS NOT NULL AND TRIM(host_secret) != '';
+
+            -- 2. Handle rows with NULL or empty host_secret:
+            -- Mark active sessions as completed because they cannot be securely authenticated.
+            UPDATE public.multiplayer_sessions
+            SET status = 'completed',
+                host_secret_hash = encode(digest(gen_random_uuid()::text, 'sha256'), 'hex')
+            WHERE host_secret IS NULL OR TRIM(host_secret) = '';
         ELSE
-            ALTER TABLE public.multiplayer_sessions ADD COLUMN host_secret_hash TEXT NOT NULL DEFAULT encode(digest(gen_random_uuid()::text, 'sha256'), 'hex');
+            -- If no legacy column existed, assign random unguessable hashes
+            UPDATE public.multiplayer_sessions
+            SET host_secret_hash = encode(digest(gen_random_uuid()::text, 'sha256'), 'hex')
+            WHERE host_secret_hash IS NULL;
         END IF;
+
+        -- Enforce NOT NULL constraint now that all rows are guaranteed non-null
+        ALTER TABLE public.multiplayer_sessions ALTER COLUMN host_secret_hash SET NOT NULL;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'available_games') THEN
+
+    -- Add available_games if not existing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'available_games'
+    ) THEN
         ALTER TABLE public.multiplayer_sessions ADD COLUMN available_games JSONB NOT NULL DEFAULT '[]'::jsonb;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'game_history') THEN
+
+    -- Add game_history if not existing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'game_history'
+    ) THEN
         ALTER TABLE public.multiplayer_sessions ADD COLUMN game_history JSONB NOT NULL DEFAULT '[]'::jsonb;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'max_participants') THEN
+
+    -- Add max_participants if not existing
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'multiplayer_sessions' AND column_name = 'max_participants'
+    ) THEN
         ALTER TABLE public.multiplayer_sessions ADD COLUMN max_participants INT DEFAULT 12;
     END IF;
 END $$;
+
+-- Normalize legacy status values before applying status check constraint
+UPDATE public.multiplayer_sessions
+SET status = 'voting'
+WHERE status = 'lobby';
 
 -- Update status check constraint safely
 DO $$
@@ -108,7 +168,7 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_multiplayer_sessions_code ON public.multiplayer_sessions (code);
 CREATE INDEX IF NOT EXISTS idx_multiplayer_sessions_status ON public.multiplayer_sessions (status);
 
--- 2. Create session_participants
+-- 2. Create session_participants if not existing
 CREATE TABLE IF NOT EXISTS public.session_participants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES public.multiplayer_sessions(id) ON DELETE CASCADE,
@@ -123,29 +183,57 @@ CREATE TABLE IF NOT EXISTS public.session_participants (
     last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
--- Idempotent column additions for session_participants
+-- Idempotent column additions and legacy data migration for session_participants
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'participant_token_hash') THEN
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'participant_token') THEN
-            ALTER TABLE public.session_participants ADD COLUMN participant_token_hash TEXT;
-            UPDATE public.session_participants SET participant_token_hash = encode(digest(participant_token, 'sha256'), 'hex');
-            ALTER TABLE public.session_participants ALTER COLUMN participant_token_hash SET NOT NULL;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'participant_token_hash'
+    ) THEN
+        ALTER TABLE public.session_participants ADD COLUMN participant_token_hash TEXT;
+
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'participant_token'
+        ) THEN
+            -- 1. Migrate rows with valid, non-empty participant_token
+            UPDATE public.session_participants
+            SET participant_token_hash = encode(digest(participant_token, 'sha256'), 'hex')
+            WHERE participant_token IS NOT NULL AND TRIM(participant_token) != '';
+
+            -- 2. Handle rows with NULL or empty participant_token:
+            -- Mark as disconnected and assign random hash so they cannot be hijacked.
+            UPDATE public.session_participants
+            SET is_connected = false,
+                participant_token_hash = encode(digest(gen_random_uuid()::text, 'sha256'), 'hex')
+            WHERE participant_token IS NULL OR TRIM(participant_token) = '';
         ELSE
-            ALTER TABLE public.session_participants ADD COLUMN participant_token_hash TEXT NOT NULL DEFAULT encode(digest(gen_random_uuid()::text, 'sha256'), 'hex');
+            UPDATE public.session_participants
+            SET participant_token_hash = encode(digest(gen_random_uuid()::text, 'sha256'), 'hex')
+            WHERE participant_token_hash IS NULL;
         END IF;
+
+        ALTER TABLE public.session_participants ALTER COLUMN participant_token_hash SET NOT NULL;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'original_name') THEN
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'original_name'
+    ) THEN
         ALTER TABLE public.session_participants ADD COLUMN original_name VARCHAR(40);
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'is_connected') THEN
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'session_participants' AND column_name = 'is_connected'
+    ) THEN
         ALTER TABLE public.session_participants ADD COLUMN is_connected BOOLEAN DEFAULT true;
     END IF;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_session_participants_session ON public.session_participants (session_id);
 
--- 3. Create session_game_votes
+-- 3. Create session_game_votes if not existing
 CREATE TABLE IF NOT EXISTS public.session_game_votes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES public.multiplayer_sessions(id) ON DELETE CASCADE,
@@ -172,7 +260,7 @@ REVOKE ALL ON public.multiplayer_sessions FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.session_participants FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.session_game_votes FROM PUBLIC, anon, authenticated;
 
--- Drop all open public read policies
+-- Drop all open public read policies to prevent REST table harvesting
 DROP POLICY IF EXISTS "Public read sessions" ON public.multiplayer_sessions;
 DROP POLICY IF EXISTS "Public read participants" ON public.session_participants;
 DROP POLICY IF EXISTS "Public read session votes" ON public.session_game_votes;
@@ -584,28 +672,28 @@ $$;
 -- STEP 4: REVOKE DEFAULT PUBLIC EXECUTION & GRANT TO SPECIFIC ROLES
 -- =============================================================================
 
-REVOKE ALL ON FUNCTION public.create_multiplayer_session_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.discover_room_by_code_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.join_multiplayer_session_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.get_room_state_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.submit_game_vote_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.update_participant_presence_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.host_update_session_status_rpc FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.host_record_game_result_rpc FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_multiplayer_session_rpc(UUID, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.discover_room_by_code_rpc(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.join_multiplayer_session_rpc(UUID, UUID, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_room_state_rpc(UUID, UUID, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.submit_game_vote_rpc(UUID, UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.update_participant_presence_rpc(UUID, UUID, TEXT, BOOLEAN) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.host_update_session_status_rpc(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.host_record_game_result_rpc(UUID, TEXT, JSONB) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION public.create_multiplayer_session_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.discover_room_by_code_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.join_multiplayer_session_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_room_state_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.submit_game_vote_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.update_participant_presence_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.host_update_session_status_rpc TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.host_record_game_result_rpc TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.create_multiplayer_session_rpc(UUID, TEXT, TEXT, TEXT, TEXT, JSONB, UUID, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.discover_room_by_code_rpc(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.join_multiplayer_session_rpc(UUID, UUID, TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_room_state_rpc(UUID, UUID, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.submit_game_vote_rpc(UUID, UUID, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.update_participant_presence_rpc(UUID, UUID, TEXT, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.host_update_session_status_rpc(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.host_record_game_result_rpc(UUID, TEXT, JSONB) TO anon, authenticated;
 ```
 
 ---
 
-## 3. Realtime Broadcast Channel Setup
+## 4. Realtime Broadcast Channel Setup
 
 1. **Broadcast Event Subscription**:
    - Clients join the channel `playbench_session_${sessionId}`.
@@ -624,7 +712,7 @@ GRANT EXECUTE ON FUNCTION public.host_record_game_result_rpc TO anon, authentica
 
 ---
 
-## 4. Resilience and Offline Mode
+## 5. Resilience and Offline Mode
 
 - If Supabase environment variables (`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`) are missing, The Playbench operates in **Local Offline Mode** using the browser's `BroadcastChannel`.
 - If Supabase is configured, all actions are strictly routed through token-verified `SECURITY DEFINER` RPCs with `search_path = public, pg_temp`. Direct table mutations and reads are completely blocked.
