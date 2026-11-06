@@ -1,10 +1,10 @@
 /**
  * IndexedDB Database Service for The Playbench (playbench_db)
  */
-import { Game, GameProject, GameSave, ImportRecord, PackageFileRecord, CustomGameDataset } from '../../types';
+import { Game, GameProject, GameSave, ImportRecord, PackageFileRecord, CustomGameDataset, SavedPrompt } from '../../types';
 
 const DB_NAME = 'playbench_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export class PlaybenchDB {
   private dbPromise: Promise<IDBDatabase> | null = null;
@@ -46,6 +46,14 @@ export class PlaybenchDB {
         // Prompt Templates Store
         if (!db.objectStoreNames.contains('prompt_templates')) {
           db.createObjectStore('prompt_templates', { keyPath: 'id' });
+        }
+
+        // Stage 5: Saved Prompts Store
+        if (!db.objectStoreNames.contains('saved_prompts')) {
+          const promptStore = db.createObjectStore('saved_prompts', { keyPath: 'id' });
+          promptStore.createIndex('by_updated', 'updatedAt');
+          promptStore.createIndex('by_template', 'templateId');
+          promptStore.createIndex('by_agent', 'targetAgent');
         }
 
         // Stage 4: Import History Store
@@ -325,6 +333,62 @@ export class PlaybenchDB {
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
       tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // Stage 5: Saved Prompts Methods
+  async getAllSavedPrompts(): Promise<SavedPrompt[]> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('saved_prompts', 'readonly');
+      const store = tx.objectStore('saved_prompts');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const results: SavedPrompt[] = req.result || [];
+        // sort by updatedAt descending
+        results.sort((a, b) => b.updatedAt - a.updatedAt);
+        resolve(results);
+      };
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getSavedPrompt(id: string): Promise<SavedPrompt | undefined> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('saved_prompts', 'readonly');
+      const store = tx.objectStore('saved_prompts');
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async savePrompt(prompt: SavedPrompt): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('saved_prompts', 'readwrite');
+      const store = tx.objectStore('saved_prompts');
+      store.put(prompt);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while saving prompt'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while saving prompt'));
+    });
+  }
+
+  async deletePrompt(id: string): Promise<void> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('saved_prompts', 'readwrite');
+      const store = tx.objectStore('saved_prompts');
+      store.delete(id);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Transaction failed while deleting prompt'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction was aborted while deleting prompt'));
     });
   }
 }
