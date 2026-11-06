@@ -32,16 +32,22 @@ export const WorkbenchHeader: React.FC = () => {
     window.location.reload();
   };
 
-  const navItems = [
-    { to: '/', label: 'The Desk', icon: Sparkles },
-    { to: '/collection', label: 'Collection', icon: Layers },
-    { to: '/workshop', label: 'Workshop', icon: Hammer },
-    { to: '/gamespace', label: 'Game Space', icon: Gamepad2 },
-    { to: '/import', label: 'Import', icon: Upload },
-    { to: '/prompts', label: 'Prompts', icon: Terminal },
-    { to: '/protocol', label: 'Protocol', icon: ScrollText },
-    { to: '/settings', label: 'Settings', icon: Sliders },
-  ];
+  const navItems = role === 'player'
+    ? [
+        { to: '/play', label: 'Player Portal', icon: Gamepad2 },
+        { to: '/protocol', label: 'Protocol', icon: ScrollText },
+      ]
+    : [
+        { to: '/', label: 'The Desk', icon: Sparkles },
+        { to: '/collection', label: 'Collection', icon: Layers },
+        { to: '/workshop', label: 'Workshop', icon: Hammer },
+        { to: '/gamespace', label: 'Game Space', icon: Gamepad2 },
+        { to: '/host/session', label: 'Multiplayer Lobby', icon: Sparkles },
+        { to: '/import', label: 'Import', icon: Upload },
+        { to: '/prompts', label: 'Prompts', icon: Terminal },
+        { to: '/protocol', label: 'Protocol', icon: ScrollText },
+        { to: '/settings', label: 'Settings', icon: Sliders },
+      ];
 
   return (
     <header className="workbench-header" style={{
