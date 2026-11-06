@@ -202,7 +202,8 @@ export class GameRegistry {
       const activeSessionRaw = localStorage.getItem('playbench_active_session');
       if (activeSessionRaw) {
         const activeSession = JSON.parse(activeSessionRaw);
-        if (activeSession.game_id === id && activeSession.status !== 'completed') {
+        const sessionGameId = activeSession.winning_game_id || activeSession.game_id;
+        if (sessionGameId === id && activeSession.status !== 'completed') {
           return {
             safe: false,
             reason: `Game is currently in use by an active multiplayer session (${activeSession.code}). End the session before deleting.`,

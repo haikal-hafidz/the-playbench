@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Users,
   Play,
   Share2,
   CheckCircle,
   AlertTriangle,
-  Award,
-  Vote,
   Sparkles,
   RefreshCw,
   LogOut,
-  Clock
+  Vote,
+  Gamepad2,
+  Crown
 } from 'lucide-react';
 import { multiplayerService } from '../../services/multiplayer';
 import { gameRegistry } from '../../services/games/gameRegistry';
@@ -18,44 +19,31 @@ import { Game } from '../../types';
 import {
   MultiplayerSession,
   SessionParticipant,
-  SessionGameState,
-  VotingRound,
-  VotingResult,
+  GameSelectionVotingState,
+  GameVote,
 } from '../../types/multiplayer';
 
 export const HostSessionPage: React.FC = () => {
+  const navigate = useNavigate();
   const [games, setGames] = useState<Game[]>([]);
-  const [selectedGameId, setSelectedGameId] = useState<string>('');
   const [hostName, setHostName] = useState<string>('Bench Master');
   const [activeSession, setActiveSession] = useState<MultiplayerSession | null>(
     multiplayerService.getActiveSession()
   );
   const [participants, setParticipants] = useState<SessionParticipant[]>([]);
-  const [gameState, setGameState] = useState<SessionGameState | null>(null);
-  const [activeVotingRound, setActiveVotingRound] = useState<VotingRound | null>(null);
-  const [latestResult, setLatestResult] = useState<VotingResult | null>(null);
-
-  // Voting setup form state
-  const [votePrompt, setVotePrompt] = useState('Which craft stationery token was hidden behind Card #4?');
-  const [voteOption1, setVoteOption1] = useState('Brass Scissors ✂️');
-  const [voteOption2, setVoteOption2] = useState('Wooden Ruler 📏');
-  const [voteOption3, setVoteOption3] = useState('Carving Knife 🔪');
-  const [voteDuration] = useState(30);
+  const [votes, setVotes] = useState<GameVote[]>([]);
+  const [votingState, setVotingState] = useState<GameSelectionVotingState | null>(null);
 
   const [copiedLink, setCopiedLink] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load games from registry
+  // Load registered games
   useEffect(() => {
     gameRegistry.getAllGames().then((all) => {
       setGames(all);
-      if (all.length > 0 && !selectedGameId) {
-        setSelectedGameId(all[0].id);
-      }
     });
   }, []);
 
-  // Sync state if session exists
   const refreshSessionData = () => {
     const current = multiplayerService.getActiveSession();
     setActiveSession(current);
@@ -63,9 +51,8 @@ export const HostSessionPage: React.FC = () => {
       const data = multiplayerService.getSessionData(current.id);
       if (data) {
         setParticipants(data.participants);
-        setGameState(data.gameState);
-        const openRound = data.votingRounds.find((r) => r.status === 'open');
-        setActiveVotingRound(openRound || null);
+        setVotes(data.votes);
+        setVotingState(data.votingState);
       }
     }
   };
@@ -73,7 +60,6 @@ export const HostSessionPage: React.FC = () => {
   useEffect(() => {
     refreshSessionData();
 
-    // Subscribe to multiplayer real-time events
     const unsubscribe = multiplayerService.subscribe(() => {
       refreshSessionData();
     });
@@ -86,12 +72,11 @@ export const HostSessionPage: React.FC = () => {
   const handleCreateSession = async () => {
     setError(null);
     try {
-      const game = games.find((g) => g.id === selectedGameId);
-      if (!game) throw new Error('Please select a game first.');
-
+      if (games.length === 0) {
+        throw new Error('No games available in registry to play.');
+      }
       const { session, hostParticipant } = await multiplayerService.createSession(
-        game.id,
-        game.title,
+        games,
         hostName
       );
       setActiveSession(session);
@@ -102,63 +87,22 @@ export const HostSessionPage: React.FC = () => {
     }
   };
 
+  const handleCloseVoting = async (tieBreakerId?: string) => {
+    if (!activeSession) return;
+    try {
+      const result = await multiplayerService.closeGameSelectionVoting(activeSession.id, tieBreakerId);
+      setVotingState(result);
+      refreshSessionData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const handleStartGame = async () => {
     if (!activeSession) return;
     try {
-      await multiplayerService.updateSessionStatus(activeSession.id, 'in-progress');
-      await multiplayerService.updateGameState(activeSession.id, {
-        phase: 'question',
-        prompt: `Round 1 of ${activeSession.game_title} has begun! Listen to the Host.`,
-      });
-      refreshSessionData();
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  const handleStartVoting = async () => {
-    if (!activeSession) return;
-    try {
-      const options = [
-        { id: 'opt_1', text: voteOption1 },
-        { id: 'opt_2', text: voteOption2 },
-        { id: 'opt_3', text: voteOption3 },
-      ].filter((o) => o.text.trim().length > 0);
-
-      const round = await multiplayerService.startVotingRound(
-        activeSession.id,
-        votePrompt,
-        options,
-        voteDuration
-      );
-      setActiveVotingRound(round);
-      refreshSessionData();
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  const handleCloseVoting = async () => {
-    if (!activeSession || !activeVotingRound) return;
-    try {
-      const result = await multiplayerService.closeVotingRound(activeSession.id, activeVotingRound.id);
-      setLatestResult(result);
-      setActiveVotingRound(null);
-      refreshSessionData();
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  const handleEndSession = async () => {
-    if (!activeSession) return;
-    try {
-      await multiplayerService.updateSessionStatus(activeSession.id, 'completed');
-      await multiplayerService.updateGameState(activeSession.id, {
-        phase: 'game-over',
-        prompt: 'Session ended by Host. Check final scores!',
-      });
-      refreshSessionData();
+      const gameId = await multiplayerService.startWinningGame(activeSession.id);
+      navigate(`/gamespace/${gameId}`);
     } catch (err: any) {
       setError(err.message);
     }
@@ -168,9 +112,8 @@ export const HostSessionPage: React.FC = () => {
     multiplayerService.clearActiveSession();
     setActiveSession(null);
     setParticipants([]);
-    setGameState(null);
-    setActiveVotingRound(null);
-    setLatestResult(null);
+    setVotes([]);
+    setVotingState(null);
   };
 
   const shareableUrl = activeSession
@@ -212,7 +155,7 @@ export const HostSessionPage: React.FC = () => {
           Host Multiplayer Session
         </h1>
         <p style={{ color: '#b0a695', margin: 0, fontSize: '14px' }}>
-          Coordinate live cross-device games with friends, manage participants in real time, and trigger synchronized voting rounds.
+          Launch a shared session for friends. Players vote on which game to play, and the winning game launches into Game Space for everyone!
         </p>
       </div>
 
@@ -236,7 +179,7 @@ export const HostSessionPage: React.FC = () => {
         </div>
       )}
 
-      {/* No active session: Creation Station */}
+      {/* No active session: Creation Form */}
       {!activeSession ? (
         <div
           style={{
@@ -257,35 +200,10 @@ export const HostSessionPage: React.FC = () => {
               marginBottom: '16px',
             }}
           >
-            Create New Multiplayer Session
+            Create Multiplayer Session
           </h2>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '13px', color: '#d0c6b6', marginBottom: '6px' }}>
-                Select Game for Session
-              </label>
-              <select
-                value={selectedGameId}
-                onChange={(e) => setSelectedGameId(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  backgroundColor: '#1b1612',
-                  border: '1px solid #4a3828',
-                  borderRadius: '6px',
-                  color: '#fcf8ee',
-                  fontSize: '14px',
-                }}
-              >
-                {games.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.title} ({g.packageOrigin})
-                  </option>
-                ))}
-              </select>
-            </div>
-
             <div>
               <label style={{ display: 'block', fontSize: '13px', color: '#d0c6b6', marginBottom: '6px' }}>
                 Host Display Name
@@ -307,6 +225,10 @@ export const HostSessionPage: React.FC = () => {
               />
             </div>
 
+            <div style={{ fontSize: '13px', color: '#b0a695' }}>
+              Games available for voting in this session: <strong>{games.length} registered micro-games</strong>
+            </div>
+
             <button
               onClick={handleCreateSession}
               style={{
@@ -326,7 +248,7 @@ export const HostSessionPage: React.FC = () => {
               }}
             >
               <Play size={18} />
-              <span>Launch Session Lobby</span>
+              <span>Open Session & Game Selection Lobby</span>
             </button>
           </div>
         </div>
@@ -351,10 +273,10 @@ export const HostSessionPage: React.FC = () => {
             >
               <div>
                 <div style={{ fontSize: '11px', color: '#b0a695', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Game: {activeSession.game_title}
+                  Session Code
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' }}>
-                  <span style={{ fontSize: '30px', fontWeight: 800, color: '#e8c872', letterSpacing: '3px' }}>
+                  <span style={{ fontSize: '32px', fontWeight: 800, color: '#e8c872', letterSpacing: '3px' }}>
                     {activeSession.code}
                   </span>
                   <span
@@ -363,13 +285,27 @@ export const HostSessionPage: React.FC = () => {
                       borderRadius: '4px',
                       fontSize: '11px',
                       fontWeight: 600,
-                      backgroundColor: activeSession.status === 'in-progress' ? '#1b4731' : '#3d2514',
-                      color: activeSession.status === 'in-progress' ? '#a7f3d0' : '#fce3b8',
+                      backgroundColor:
+                        activeSession.status === 'ready-to-start'
+                          ? '#1b4731'
+                          : activeSession.status === 'voting'
+                          ? '#382b13'
+                          : '#1b4731',
+                      color:
+                        activeSession.status === 'ready-to-start'
+                          ? '#86efac'
+                          : activeSession.status === 'voting'
+                          ? '#fce3b8'
+                          : '#a7f3d0',
                       border: '1px solid rgba(255,255,255,0.1)',
                       textTransform: 'uppercase',
                     }}
                   >
-                    {activeSession.status}
+                    {activeSession.status === 'voting'
+                      ? 'Game Selection Voting'
+                      : activeSession.status === 'ready-to-start'
+                      ? 'Game Decided'
+                      : activeSession.status}
                   </span>
                 </div>
               </div>
@@ -417,269 +353,202 @@ export const HostSessionPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Waiting Room & Session Progression */}
-            {activeSession.status === 'waiting' && (
-              <div
-                style={{
-                  backgroundColor: '#1f1914',
-                  border: '1px solid #3d2f24',
-                  borderRadius: '10px',
-                  padding: '24px',
-                  textAlign: 'center',
-                }}
-              >
-                <Users size={36} color="#e8c872" style={{ margin: '0 auto 12px auto' }} />
-                <h3 style={{ margin: '0 0 6px 0', fontSize: '18px', color: '#fcf8ee' }}>
-                  Waiting Room Open
-                </h3>
-                <p style={{ color: '#b0a695', fontSize: '14px', margin: '0 0 16px 0' }}>
-                  Share session code <strong>{activeSession.code}</strong> with players. Once everyone has joined, start the game.
-                </p>
-                <button
-                  onClick={handleStartGame}
+            {/* Game Selection Voting Console */}
+            <div
+              style={{
+                backgroundColor: '#1f1914',
+                border: '1px solid #3d2f24',
+                borderRadius: '10px',
+                padding: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Vote size={18} color="#e8c872" />
+                  <h3 style={{ margin: 0, fontSize: '17px', color: '#e8c872' }}>
+                    Game Selection Voting (Live Tally)
+                  </h3>
+                </div>
+                <div style={{ fontSize: '13px', color: '#b0a695' }}>
+                  Total Votes Cast: <strong>{votes.length} / {participants.length}</strong>
+                </div>
+              </div>
+
+              {/* Tally list */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {games.map((g) => {
+                  const tally = votingState?.tallies?.[g.id] || { voteCount: 0, percentage: 0, voterNames: [] };
+                  const isWinning =
+                    activeSession.winning_game_id === g.id ||
+                    (votingState?.winningGameId === g.id && !votingState.isTie);
+
+                  return (
+                    <div
+                      key={g.id}
+                      style={{
+                        padding: '12px 16px',
+                        backgroundColor: '#1b1612',
+                        border: isWinning ? '2px solid #34d399' : '1px solid #3d2f24',
+                        borderRadius: '8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <Gamepad2 size={16} color={isWinning ? '#34d399' : '#e8c872'} />
+                          <span style={{ fontSize: '15px', fontWeight: 600, color: isWinning ? '#86efac' : '#fcf8ee' }}>
+                            {g.title}
+                          </span>
+                          {isWinning && (
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                fontSize: '11px',
+                                backgroundColor: '#132117',
+                                color: '#34d399',
+                                border: '1px solid #203f29',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                fontWeight: 700,
+                              }}
+                            >
+                              <Crown size={12} />
+                              <span>WINNER</span>
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '14px', fontWeight: 700, color: '#e8c872' }}>
+                          {tally.voteCount} vote(s) ({tally.percentage}%)
+                        </div>
+                      </div>
+
+                      {/* Progress bar */}
+                      <div
+                        style={{
+                          width: '100%',
+                          height: '8px',
+                          backgroundColor: '#2d231a',
+                          borderRadius: '4px',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${tally.percentage}%`,
+                            height: '100%',
+                            backgroundColor: isWinning ? '#34d399' : '#e8c872',
+                            transition: 'width 0.3s ease',
+                          }}
+                        />
+                      </div>
+
+                      {tally.voterNames.length > 0 && (
+                        <div style={{ fontSize: '11px', color: '#b0a695' }}>
+                          Voted by: {tally.voterNames.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Tie banner */}
+              {votingState?.isTie && (
+                <div
                   style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    backgroundColor: '#1b4731',
-                    color: '#e8c872',
-                    border: '1px solid #2d6a45',
+                    backgroundColor: '#3b2915',
+                    border: '1px solid #6b4d1d',
                     borderRadius: '8px',
-                    padding: '12px 24px',
-                    fontSize: '15px',
-                    fontWeight: 700,
-                    cursor: 'pointer',
+                    padding: '12px 16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
                   }}
                 >
-                  <Play size={18} />
-                  <span>Start Game with {participants.length} Participant(s)</span>
-                </button>
-              </div>
-            )}
-
-            {/* Active Gameplay & Voting Controls */}
-            {activeSession.status !== 'waiting' && (
-              <div
-                style={{
-                  backgroundColor: '#1f1914',
-                  border: '1px solid #3d2f24',
-                  borderRadius: '10px',
-                  padding: '20px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '16px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h3 style={{ margin: 0, fontSize: '17px', color: '#e8c872', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Vote size={18} />
-                    <span>Synchronized Voting Station</span>
-                  </h3>
-                  <button
-                    onClick={handleEndSession}
-                    style={{
-                      fontSize: '12px',
-                      backgroundColor: '#501e1e',
-                      color: '#fecaca',
-                      border: '1px solid #802e2e',
-                      padding: '4px 10px',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    End Session
-                  </button>
-                </div>
-
-                {activeVotingRound ? (
-                  <div
-                    style={{
-                      backgroundColor: '#162e20',
-                      border: '1px solid #2d6a45',
-                      borderRadius: '8px',
-                      padding: '16px',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontSize: '11px', color: '#86efac', fontWeight: 600, textTransform: 'uppercase' }}>
-                        Voting Round In Progress
-                      </span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#e8c872', fontSize: '13px' }}>
-                        <Clock size={14} />
-                        <span>Duration: {activeVotingRound.duration_seconds}s</span>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '16px', fontWeight: 600, color: '#fcf8ee', marginBottom: '12px' }}>
-                      {activeVotingRound.prompt}
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
-                      {activeVotingRound.options.map((opt) => (
-                        <div
-                          key={opt.id}
+                  <div style={{ fontSize: '13px', color: '#fce3b8', fontWeight: 600 }}>
+                    Tie detected between games! Choose a tie-breaking winner:
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {votingState.tiedGameIds.map((tid) => {
+                      const tg = games.find((x) => x.id === tid);
+                      return (
+                        <button
+                          key={tid}
+                          onClick={() => handleCloseVoting(tid)}
                           style={{
-                            padding: '8px 12px',
-                            backgroundColor: '#0f1f15',
-                            border: '1px solid #1b4731',
+                            backgroundColor: '#e8c872',
+                            color: '#1b1612',
+                            border: 'none',
+                            padding: '6px 12px',
                             borderRadius: '4px',
-                            fontSize: '13px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
                           }}
                         >
-                          {opt.text}
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={handleCloseVoting}
-                      style={{
-                        backgroundColor: '#e8c872',
-                        color: '#1b1612',
-                        border: 'none',
-                        borderRadius: '6px',
-                        padding: '8px 16px',
-                        fontSize: '13px',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Close Voting & Tally Results
-                    </button>
-                  </div>
-                ) : (
-                  /* Form to launch a new voting round */
-                  <div
-                    style={{
-                      backgroundColor: '#261e17',
-                      border: '1px solid #4a3828',
-                      borderRadius: '8px',
-                      padding: '16px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '12px',
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#d0c6b6' }}>
-                      Trigger New Voting Prompt for Players
-                    </div>
-
-                    <input
-                      type="text"
-                      value={votePrompt}
-                      onChange={(e) => setVotePrompt(e.target.value)}
-                      placeholder="Voting Question / Prompt"
-                      style={{
-                        width: '100%',
-                        padding: '8px 12px',
-                        backgroundColor: '#1b1612',
-                        border: '1px solid #3d2f24',
-                        borderRadius: '4px',
-                        color: '#fcf8ee',
-                        fontSize: '13px',
-                      }}
-                    />
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-                      <input
-                        type="text"
-                        value={voteOption1}
-                        onChange={(e) => setVoteOption1(e.target.value)}
-                        placeholder="Option 1"
-                        style={{
-                          padding: '8px 10px',
-                          backgroundColor: '#1b1612',
-                          border: '1px solid #3d2f24',
-                          borderRadius: '4px',
-                          color: '#fcf8ee',
-                          fontSize: '12px',
-                        }}
-                      />
-                      <input
-                        type="text"
-                        value={voteOption2}
-                        onChange={(e) => setVoteOption2(e.target.value)}
-                        placeholder="Option 2"
-                        style={{
-                          padding: '8px 10px',
-                          backgroundColor: '#1b1612',
-                          border: '1px solid #3d2f24',
-                          borderRadius: '4px',
-                          color: '#fcf8ee',
-                          fontSize: '12px',
-                        }}
-                      />
-                      <input
-                        type="text"
-                        value={voteOption3}
-                        onChange={(e) => setVoteOption3(e.target.value)}
-                        placeholder="Option 3"
-                        style={{
-                          padding: '8px 10px',
-                          backgroundColor: '#1b1612',
-                          border: '1px solid #3d2f24',
-                          borderRadius: '4px',
-                          color: '#fcf8ee',
-                          fontSize: '12px',
-                        }}
-                      />
-                    </div>
-
-                    <button
-                      onClick={handleStartVoting}
-                      style={{
-                        alignSelf: 'flex-start',
-                        backgroundColor: '#1b4731',
-                        color: '#e8c872',
-                        border: '1px solid #2d6a45',
-                        borderRadius: '6px',
-                        padding: '8px 16px',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Broadcast Voting Round
-                    </button>
-                  </div>
-                )}
-
-                {/* Latest Voting Results */}
-                {latestResult && (
-                  <div
-                    style={{
-                      backgroundColor: '#1b1612',
-                      border: '1px solid #3d2f24',
-                      borderRadius: '8px',
-                      padding: '14px',
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#e8c872', marginBottom: '8px' }}>
-                      Voting Results (Total Votes: {latestResult.totalVotes})
-                    </div>
-                    {Object.entries(latestResult.counts).map(([optId, count]) => {
-                      const pct = latestResult.percentages[optId] || 0;
-                      const isWinner = latestResult.winningOptionIds.includes(optId);
-                      return (
-                        <div key={optId} style={{ marginBottom: '8px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '2px' }}>
-                            <span style={{ color: isWinner ? '#86efac' : '#fcf8ee', fontWeight: isWinner ? 700 : 400 }}>
-                              {optId} {isWinner && '👑 Winner'}
-                            </span>
-                            <span style={{ color: '#b0a695' }}>{count} vote(s) ({pct}%)</span>
-                          </div>
-                          <div style={{ width: '100%', height: '6px', backgroundColor: '#2d231a', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{ width: `${pct}%`, height: '100%', backgroundColor: isWinner ? '#34d399' : '#e8c872' }} />
-                          </div>
-                        </div>
+                          Pick {tg?.title || tid} as Winner
+                        </button>
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                {activeSession.status === 'voting' ? (
+                  <button
+                    onClick={() => handleCloseVoting()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      backgroundColor: '#1b4731',
+                      color: '#e8c872',
+                      border: '1px solid #2d6a45',
+                      borderRadius: '8px',
+                      padding: '12px 20px',
+                      fontSize: '14px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <CheckCircle size={16} />
+                    <span>Close Voting & Confirm Winning Game</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartGame}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      backgroundColor: '#1b4731',
+                      color: '#e8c872',
+                      border: '1px solid #2d6a45',
+                      borderRadius: '8px',
+                      padding: '14px 24px',
+                      fontSize: '15px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Play size={18} />
+                    <span>Start Winning Game ({activeSession.winning_game_title}) in Game Space</span>
+                  </button>
                 )}
               </div>
-            )}
+            </div>
           </div>
 
-          {/* Sidebar: Participants and Leaderboard */}
+          {/* Sidebar: Participants */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div
               style={{
@@ -692,7 +561,7 @@ export const HostSessionPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: '#fcf8ee', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Users size={15} color="#e8c872" />
-                  <span>Participants ({participants.length})</span>
+                  <span>Connected Participants ({participants.length})</span>
                 </span>
                 <button
                   onClick={refreshSessionData}
@@ -705,40 +574,49 @@ export const HostSessionPage: React.FC = () => {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {participants.map((p) => {
-                  const score = gameState?.scores?.[p.id] || 0;
+                  const playerVote = votes.find((v) => v.participant_id === p.id);
                   return (
                     <div
                       key={p.id}
                       style={{
                         display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
+                        flexDirection: 'column',
+                        gap: '4px',
                         padding: '8px 10px',
                         backgroundColor: '#1b1612',
                         borderRadius: '6px',
                         border: '1px solid #3d2f24',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span
-                          style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            backgroundColor: p.is_connected ? '#34d399' : '#6b7280',
-                          }}
-                        />
-                        <span style={{ fontSize: '13px', fontWeight: 500 }}>{p.player_name}</span>
-                        {p.role === 'host' && (
-                          <span style={{ fontSize: '10px', color: '#e8c872', backgroundColor: '#382b13', padding: '1px 4px', borderRadius: '3px' }}>
-                            Host
-                          </span>
-                        )}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span
+                            style={{
+                              width: '8px',
+                              height: '8px',
+                              borderRadius: '50%',
+                              backgroundColor: p.is_connected ? '#34d399' : '#6b7280',
+                            }}
+                          />
+                          <span style={{ fontSize: '13px', fontWeight: 500 }}>{p.player_name}</span>
+                          {p.role === 'host' && (
+                            <span style={{ fontSize: '10px', color: '#e8c872', backgroundColor: '#382b13', padding: '1px 4px', borderRadius: '3px' }}>
+                              Host
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#e8c872', fontSize: '12px', fontWeight: 600 }}>
-                        <Award size={13} />
-                        <span>{score} pts</span>
-                      </div>
+
+                      {playerVote ? (
+                        <div style={{ fontSize: '11px', color: '#86efac', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <CheckCircle size={11} />
+                          <span>Voted for: {playerVote.game_title}</span>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '11px', color: '#9ca3af' }}>
+                          Choosing game...
+                        </div>
+                      )}
                     </div>
                   );
                 })}

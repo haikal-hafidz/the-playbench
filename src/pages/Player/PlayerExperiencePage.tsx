@@ -2,21 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Gamepad2,
-  Users,
   Vote,
   CheckCircle,
   AlertCircle,
-  Clock,
   Sparkles,
   LogOut,
-  Award
+  Crown
 } from 'lucide-react';
 import { multiplayerService } from '../../services/multiplayer';
+import { Game } from '../../types';
 import {
   MultiplayerSession,
   SessionParticipant,
-  SessionGameState,
-  VotingRound,
+  GameSelectionVotingState,
+  GameVote,
 } from '../../types/multiplayer';
 
 export const PlayerExperiencePage: React.FC = () => {
@@ -27,10 +26,9 @@ export const PlayerExperiencePage: React.FC = () => {
   const [playerName, setPlayerName] = useState('');
   const [activeSession, setActiveSession] = useState<MultiplayerSession | null>(null);
   const [currentParticipant, setCurrentParticipant] = useState<SessionParticipant | null>(null);
-  const [gameState, setGameState] = useState<SessionGameState | null>(null);
-  const [activeVotingRound, setActiveVotingRound] = useState<VotingRound | null>(null);
-  const [selectedVoteOption, setSelectedVoteOption] = useState<string | null>(null);
-  const [hasVoted, setHasVoted] = useState(false);
+  const [availableGames, setAvailableGames] = useState<Game[]>([]);
+  const [votingState, setVotingState] = useState<GameSelectionVotingState | null>(null);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -44,21 +42,20 @@ export const PlayerExperiencePage: React.FC = () => {
     if (session) {
       const data = multiplayerService.getSessionData(session.id);
       if (data) {
-        setGameState(data.gameState);
-        const openRound = data.votingRounds.find((r) => r.status === 'open');
-        setActiveVotingRound(openRound || null);
+        setAvailableGames(data.availableGames);
+        setVotingState(data.votingState);
 
-        if (openRound && participant) {
-          const myVote = data.votes.find(
-            (v) => v.voting_round_id === openRound.id && v.participant_id === participant.id
-          );
+        // Check which game this participant voted for
+        if (participant) {
+          const myVote = data.votes.find((v: GameVote) => v.participant_id === participant.id);
           if (myVote) {
-            setHasVoted(true);
-            setSelectedVoteOption(myVote.option_id);
-          } else {
-            setHasVoted(false);
-            setSelectedVoteOption(null);
+            setSelectedGameId(myVote.game_id);
           }
+        }
+
+        // If game started by Host, navigate to Game Space
+        if (session.status === 'in-progress' && session.winning_game_id) {
+          navigate(`/gamespace/${session.winning_game_id}`);
         }
       }
     }
@@ -69,16 +66,18 @@ export const PlayerExperiencePage: React.FC = () => {
       setSessionCode(urlCode.toUpperCase());
     }
 
-    // Only restore active session if participant role is player
     const currentPart = multiplayerService.getCurrentParticipant();
     if (currentPart && currentPart.role === 'player') {
       refreshPlayerData();
     }
 
-    const unsubscribe = multiplayerService.subscribe(() => {
+    const unsubscribe = multiplayerService.subscribe((event) => {
       const p = multiplayerService.getCurrentParticipant();
       if (p && p.role === 'player') {
         refreshPlayerData();
+      }
+      if (event.type === 'GAME_STARTED' && event.payload?.gameId) {
+        navigate(`/gamespace/${event.payload.gameId}`);
       }
     });
 
@@ -106,18 +105,17 @@ export const PlayerExperiencePage: React.FC = () => {
     }
   };
 
-  const handleVote = async (optionId: string) => {
-    if (!activeSession || !activeVotingRound || !currentParticipant) return;
+  const handleVote = async (game: Game) => {
+    if (!activeSession || !currentParticipant) return;
     setError(null);
     try {
-      await multiplayerService.submitVote(
+      await multiplayerService.submitGameVote(
         activeSession.id,
-        activeVotingRound.id,
         currentParticipant.id,
-        optionId
+        game.id,
+        game.title
       );
-      setSelectedVoteOption(optionId);
-      setHasVoted(true);
+      setSelectedGameId(game.id);
       refreshPlayerData();
     } catch (err: any) {
       setError(err.message);
@@ -128,8 +126,9 @@ export const PlayerExperiencePage: React.FC = () => {
     multiplayerService.clearActiveSession();
     setActiveSession(null);
     setCurrentParticipant(null);
-    setGameState(null);
-    setActiveVotingRound(null);
+    setAvailableGames([]);
+    setVotingState(null);
+    setSelectedGameId(null);
     navigate('/play');
   };
 
@@ -168,7 +167,7 @@ export const PlayerExperiencePage: React.FC = () => {
             margin: '4px 0',
           }}
         >
-          {activeSession ? activeSession.game_title : 'Join Multiplayer Session'}
+          {activeSession ? `Multiplayer Session ${activeSession.code}` : 'Join Multiplayer Session'}
         </h1>
         <p style={{ color: '#b0a695', fontSize: '13px', margin: 0 }}>
           {activeSession
@@ -282,11 +281,11 @@ export const PlayerExperiencePage: React.FC = () => {
             }}
           >
             <Sparkles size={18} />
-            <span>{isSubmitting ? 'Joining Session...' : 'Enter Waiting Room'}</span>
+            <span>{isSubmitting ? 'Joining Session...' : 'Enter Session & Vote for Game'}</span>
           </button>
         </form>
       ) : (
-        /* In-Session Experience */
+        /* In-Session Experience: Game Selection Voting */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Top Status Strip */}
           <div
@@ -313,11 +312,6 @@ export const PlayerExperiencePage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#e8c872', fontSize: '13px', fontWeight: 600 }}>
-                <Award size={14} />
-                <span>{gameState?.scores?.[currentParticipant?.id || ''] || 0} pts</span>
-              </div>
-
               <button
                 onClick={handleLeaveSession}
                 title="Leave Session"
@@ -338,148 +332,141 @@ export const PlayerExperiencePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Waiting Room state */}
-          {activeSession.status === 'waiting' && (
+          {/* Winning game announcement banner */}
+          {activeSession.winning_game_title && (
             <div
               style={{
-                backgroundColor: '#1f1914',
-                border: '2px dashed #4a3828',
-                borderRadius: '12px',
-                padding: '36px 20px',
+                backgroundColor: '#132117',
+                border: '2px solid #2d6a45',
+                borderRadius: '10px',
+                padding: '16px',
                 textAlign: 'center',
               }}
             >
-              <Users size={44} color="#e8c872" style={{ margin: '0 auto 16px auto' }} />
-              <h2 style={{ fontSize: '20px', margin: '0 0 8px 0', color: '#fcf8ee' }}>
-                You're in the Waiting Room!
+              <Crown size={28} color="#e8c872" style={{ margin: '0 auto 8px auto' }} />
+              <div style={{ fontSize: '11px', color: '#86efac', textTransform: 'uppercase', fontWeight: 700 }}>
+                Voting Closed • Winning Game Decided!
+              </div>
+              <h2 style={{ fontSize: '20px', color: '#fcf8ee', margin: '4px 0 8px 0' }}>
+                {activeSession.winning_game_title}
               </h2>
-              <p style={{ color: '#b0a695', fontSize: '14px', maxWidth: '400px', margin: '0 auto 20px auto', lineHeight: 1.5 }}>
-                Waiting for the Host to start the game. Keep this window open and listen for instructions.
+              <p style={{ color: '#b0a695', fontSize: '13px', margin: 0 }}>
+                Waiting for the Host to start the game. You will automatically be transitioned into Game Space.
               </p>
-              <div
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  backgroundColor: '#132117',
-                  border: '1px solid #203f29',
-                  borderRadius: '20px',
-                  padding: '6px 14px',
-                  fontSize: '12px',
-                  color: '#8fad91',
-                }}
-              >
-                <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#34d399' }} />
-                <span>Connected & Ready</span>
+            </div>
+          )}
+
+          {/* Game Selection Voting List */}
+          <div
+            style={{
+              backgroundColor: '#261e17',
+              border: '2px solid #4a3828',
+              borderRadius: '12px',
+              padding: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '18px', color: '#fcf8ee', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Vote size={18} color="#e8c872" />
+                  <span>Vote for Which Game to Play</span>
+                </h3>
+                <p style={{ color: '#b0a695', fontSize: '13px', margin: 0 }}>
+                  Select exactly one game. You can change your selection anytime before the Host closes voting.
+                </p>
               </div>
             </div>
-          )}
 
-          {/* Active Gameplay or Voting */}
-          {activeSession.status !== 'waiting' && (
-            <div
-              style={{
-                backgroundColor: '#261e17',
-                border: '2px solid #4a3828',
-                borderRadius: '12px',
-                padding: '24px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '18px',
-              }}
-            >
-              {activeVotingRound ? (
-                /* Interactive Voting Station */
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#e8c872', fontSize: '13px', fontWeight: 600 }}>
-                      <Vote size={16} />
-                      <span>Live Voting Prompt</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#b0a695', fontSize: '12px' }}>
-                      <Clock size={13} />
-                      <span>{activeVotingRound.duration_seconds}s limit</span>
-                    </div>
-                  </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {availableGames.map((game) => {
+                const isSelected = selectedGameId === game.id;
+                const tally = votingState?.tallies?.[game.id] || { voteCount: 0, percentage: 0 };
+                const isVotingClosed = activeSession.status === 'ready-to-start' || activeSession.status === 'in-progress';
 
-                  <h3
+                return (
+                  <button
+                    key={game.id}
+                    disabled={isVotingClosed}
+                    onClick={() => handleVote(game)}
                     style={{
-                      fontFamily: 'var(--font-family-display)',
-                      fontSize: '19px',
-                      color: '#fcf8ee',
-                      margin: '0 0 16px 0',
-                      lineHeight: 1.4,
+                      padding: '16px 20px',
+                      backgroundColor: isSelected ? '#1b4731' : '#1b1612',
+                      border: isSelected ? '2px solid #34d399' : '1px solid #4a3828',
+                      borderRadius: '8px',
+                      color: isSelected ? '#fcf8ee' : '#d0c6b6',
+                      textAlign: 'left',
+                      cursor: isVotingClosed ? 'default' : 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      transition: 'all 0.15s ease',
                     }}
                   >
-                    {activeVotingRound.prompt}
-                  </h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Gamepad2 size={18} color={isSelected ? '#34d399' : '#e8c872'} />
+                        <span style={{ fontSize: '16px', fontWeight: 700, color: isSelected ? '#86efac' : '#fcf8ee' }}>
+                          {game.title}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: '#e8c872' }}>
+                          {tally.voteCount} vote(s) ({tally.percentage}%)
+                        </span>
+                        {isSelected && <CheckCircle size={18} color="#34d399" />}
+                      </div>
+                    </div>
 
-                  {/* Options */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {activeVotingRound.options.map((opt) => {
-                      const isSelected = selectedVoteOption === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          disabled={hasVoted}
-                          onClick={() => handleVote(opt.id)}
-                          style={{
-                            padding: '14px 18px',
-                            backgroundColor: isSelected ? '#1b4731' : '#1b1612',
-                            border: isSelected ? '2px solid #34d399' : '1px solid #4a3828',
-                            borderRadius: '8px',
-                            color: isSelected ? '#fcf8ee' : '#d0c6b6',
-                            fontSize: '15px',
-                            fontWeight: 600,
-                            textAlign: 'left',
-                            cursor: hasVoted ? 'default' : 'pointer',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            transition: 'all 0.15s ease',
-                          }}
-                        >
-                          <span>{opt.text}</span>
-                          {isSelected && <CheckCircle size={18} color="#34d399" />}
-                        </button>
-                      );
-                    })}
-                  </div>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#b0a695', lineHeight: 1.4 }}>
+                      {game.description}
+                    </p>
 
-                  {hasVoted && (
+                    {/* Progress bar */}
                     <div
                       style={{
-                        marginTop: '16px',
-                        padding: '12px',
-                        backgroundColor: '#162e20',
-                        border: '1px solid #2d6a45',
-                        borderRadius: '6px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        color: '#86efac',
-                        fontSize: '13px',
+                        width: '100%',
+                        height: '6px',
+                        backgroundColor: '#2d231a',
+                        borderRadius: '3px',
+                        overflow: 'hidden',
+                        marginTop: '4px',
                       }}
                     >
-                      <CheckCircle size={16} />
-                      <span>Vote submitted! Waiting for Host to close the round and tally results.</span>
+                      <div
+                        style={{
+                          width: `${tally.percentage}%`,
+                          height: '100%',
+                          backgroundColor: isSelected ? '#34d399' : '#e8c872',
+                        }}
+                      />
                     </div>
-                  )}
-                </div>
-              ) : (
-                /* General Gameplay Phase */
-                <div style={{ textAlign: 'center', padding: '24px 0' }}>
-                  <Sparkles size={36} color="#e8c872" style={{ margin: '0 auto 12px auto' }} />
-                  <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', color: '#fcf8ee' }}>
-                    {gameState?.prompt || 'Round in Progress'}
-                  </h3>
-                  <p style={{ color: '#b0a695', fontSize: '13px', margin: 0 }}>
-                    Watch the Host screen and prepare for the next round.
-                  </p>
-                </div>
-              )}
+                  </button>
+                );
+              })}
             </div>
-          )}
+
+            {selectedGameId && (
+              <div
+                style={{
+                  padding: '12px 16px',
+                  backgroundColor: '#162e20',
+                  border: '1px solid #2d6a45',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  color: '#86efac',
+                  fontSize: '13px',
+                }}
+              >
+                <CheckCircle size={16} />
+                <span>Your vote is cast! You can click another game above to change your choice anytime before voting ends.</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

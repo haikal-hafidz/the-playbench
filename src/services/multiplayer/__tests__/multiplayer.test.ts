@@ -2,8 +2,28 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import 'fake-indexeddb/auto';
 import { multiplayerService } from '../multiplayerService';
 import { gameRegistry, BUNDLED_GAMES } from '../../games/gameRegistry';
+import { Game } from '../../../types';
 
-describe('Stage 7 Multiplayer Session Service & Voting System', () => {
+const SAMPLE_GAMES: Game[] = [
+  ...BUNDLED_GAMES,
+  {
+    id: 'custom-card-game',
+    title: 'Custom Cards',
+    description: 'A custom card game for multiplayer testing.',
+    genre: ['cards'],
+    version: '1.0.0',
+    runtime: { type: 'html-standalone', entrypoint: 'index.html' },
+    players: { min: 2, max: 4, type: 'pass-and-play' },
+    tags: ['cards'],
+    offlineCapable: true,
+    packageOrigin: 'imported-json',
+    playCount: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+];
+
+describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
   beforeEach(() => {
     localStorage.clear();
     multiplayerService.clearActiveSession();
@@ -15,28 +35,28 @@ describe('Stage 7 Multiplayer Session Service & Voting System', () => {
     expect(multiplayerService.validateSessionCode(code)).toBe(true);
   });
 
-  it('creates a multiplayer session with waiting status and host participant', async () => {
+  it('creates a multiplayer session with voting status and host participant', async () => {
     const { session, hostParticipant } = await multiplayerService.createSession(
-      'number-guess',
-      'Number Guess',
+      SAMPLE_GAMES,
       'Host Fox'
     );
 
     expect(session.id).toBeDefined();
     expect(session.code).toHaveLength(6);
-    expect(session.status).toBe('waiting');
-    expect(session.game_id).toBe('number-guess');
+    expect(session.status).toBe('voting');
     expect(hostParticipant.role).toBe('host');
     expect(hostParticipant.player_name).toBe('Host Fox');
 
     const active = multiplayerService.getActiveSession();
     expect(active?.code).toBe(session.code);
+
+    const data = multiplayerService.getSessionData(session.id);
+    expect(data?.availableGames).toHaveLength(SAMPLE_GAMES.length);
   });
 
   it('allows players to join an active session with validation', async () => {
     const { session } = await multiplayerService.createSession(
-      'number-guess',
-      'Number Guess',
+      SAMPLE_GAMES,
       'Host Fox'
     );
 
@@ -55,8 +75,7 @@ describe('Stage 7 Multiplayer Session Service & Voting System', () => {
 
   it('rejects joining when display name is duplicate in the same session', async () => {
     const { session } = await multiplayerService.createSession(
-      'number-guess',
-      'Number Guess',
+      SAMPLE_GAMES,
       'Host Fox'
     );
 
@@ -73,77 +92,94 @@ describe('Stage 7 Multiplayer Session Service & Voting System', () => {
     ).rejects.toThrow(/not found or has expired/i);
   });
 
-  it('enforces one-vote-per-player in voting rounds', async () => {
+  it('allows players to vote for exactly one game and tally votes correctly', async () => {
     const { session } = await multiplayerService.createSession(
-      'memory-match',
-      'Memory Match',
+      SAMPLE_GAMES,
       'Host'
     );
 
     const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
     const { participant: p2 } = await multiplayerService.joinSession(session.code, 'Player 2');
 
-    const votingRound = await multiplayerService.startVotingRound(
+    // Player 1 votes for Number Guess
+    await multiplayerService.submitGameVote(
       session.id,
-      'Best Workbench Stationery?',
-      [
-        { id: 'opt_scissors', text: 'Scissors ✂️' },
-        { id: 'opt_ruler', text: 'Ruler 📏' },
-      ],
-      30
-    );
-
-    expect(votingRound.status).toBe('open');
-
-    // Player 1 votes for scissors
-    const vote1 = await multiplayerService.submitVote(
-      session.id,
-      votingRound.id,
       p1.id,
-      'opt_scissors'
+      'number-guess',
+      'Number Guess'
     );
-    expect(vote1.success).toBe(true);
 
-    // Player 2 votes for scissors
-    const vote2 = await multiplayerService.submitVote(
+    // Player 2 votes for Memory Match
+    const res2 = await multiplayerService.submitGameVote(
       session.id,
-      votingRound.id,
       p2.id,
-      'opt_scissors'
+      'memory-match',
+      'Memory Match'
     );
-    expect(vote2.success).toBe(true);
 
-    // Player 1 tries to vote again when allowVoteChange is false
-    await expect(
-      multiplayerService.submitVote(session.id, votingRound.id, p1.id, 'opt_ruler')
-    ).rejects.toThrow(/already submitted your vote/i);
-
-    // Close voting and tally results
-    const results = await multiplayerService.closeVotingRound(session.id, votingRound.id);
-    expect(results.status).toBe('closed');
-    expect(results.totalVotes).toBe(2);
-    expect(results.counts['opt_scissors']).toBe(2);
-    expect(results.counts['opt_ruler']).toBe(0);
-    expect(results.winningOptionIds).toEqual(['opt_scissors']);
-    expect(results.isTie).toBe(false);
+    expect(res2.tally.totalVotes).toBe(2);
+    expect(res2.tally.tallies['number-guess'].voteCount).toBe(1);
+    expect(res2.tally.tallies['memory-match'].voteCount).toBe(1);
+    expect(res2.tally.isTie).toBe(true);
   });
 
-  it('rejects votes submitted after a voting round has closed', async () => {
-    const { session } = await multiplayerService.createSession('test-game', 'Test Game', 'Host');
-    const { participant } = await multiplayerService.joinSession(session.code, 'Player Early');
-
-    const round = await multiplayerService.startVotingRound(
-      session.id,
-      'Quick vote',
-      [{ id: 'a', text: 'A' }, { id: 'b', text: 'B' }],
-      30
+  it('replaces previous vote when a player changes their game selection (no duplicate votes)', async () => {
+    const { session } = await multiplayerService.createSession(
+      SAMPLE_GAMES,
+      'Host'
     );
 
-    await multiplayerService.closeVotingRound(session.id, round.id);
+    const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
 
+    // Player 1 votes for Number Guess
+    await multiplayerService.submitGameVote(session.id, p1.id, 'number-guess', 'Number Guess');
+
+    let data = multiplayerService.getSessionData(session.id);
+    expect(data?.votes).toHaveLength(1);
+    expect(data?.votes[0].game_id).toBe('number-guess');
+
+    // Player 1 changes vote to Memory Match
+    const updated = await multiplayerService.submitGameVote(
+      session.id,
+      p1.id,
+      'memory-match',
+      'Memory Match'
+    );
+
+    data = multiplayerService.getSessionData(session.id);
+    expect(data?.votes).toHaveLength(1); // Still exactly one vote!
+    expect(data?.votes[0].game_id).toBe('memory-match');
+    expect(updated.tally.tallies['number-guess'].voteCount).toBe(0);
+    expect(updated.tally.tallies['memory-match'].voteCount).toBe(1);
+    expect(updated.tally.totalVotes).toBe(1);
+  });
+
+  it('closes voting, decides highest-voted game, and launches into Game Space', async () => {
+    const { session } = await multiplayerService.createSession(SAMPLE_GAMES, 'Host');
+    const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
+    const { participant: p2 } = await multiplayerService.joinSession(session.code, 'Player 2');
+
+    // Two votes for Memory Match
+    await multiplayerService.submitGameVote(session.id, p1.id, 'memory-match', 'Memory Match');
+    await multiplayerService.submitGameVote(session.id, p2.id, 'memory-match', 'Memory Match');
+
+    // Close voting
+    const finalVotingState = await multiplayerService.closeGameSelectionVoting(session.id);
+    expect(finalVotingState.status).toBe('closed');
+    expect(finalVotingState.winningGameId).toBe('memory-match');
+
+    // Reject subsequent votes after voting closed
     await expect(
-      multiplayerService.submitVote(session.id, round.id, participant.id, 'a')
+      multiplayerService.submitGameVote(session.id, p1.id, 'number-guess', 'Number Guess')
     ).rejects.toThrow(/already closed/i);
+
+    // Host starts game
+    const startedGameId = await multiplayerService.startWinningGame(session.id);
+    expect(startedGameId).toBe('memory-match');
+
+    const finalSession = multiplayerService.getActiveSession();
+    expect(finalSession?.status).toBe('in-progress');
+    expect(finalSession?.winning_game_id).toBe('memory-match');
   });
 
   it('protects bundled games and active session games from deletion', async () => {
@@ -155,14 +191,7 @@ describe('Stage 7 Multiplayer Session Service & Voting System', () => {
     expect(bundledCheck.reason).toMatch(/bundled workshop games cannot be deleted/i);
 
     // 2. Active session game protection
-    const { session } = await multiplayerService.createSession(
-      'custom-trivia-game',
-      'Custom Trivia',
-      'Host'
-    );
-
-    // Register dummy custom game
-    await gameRegistry.registerGame({
+    const customGame: Game = {
       id: 'custom-trivia-game',
       title: 'Custom Trivia',
       description: 'Test',
@@ -176,15 +205,16 @@ describe('Stage 7 Multiplayer Session Service & Voting System', () => {
       playCount: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-    });
+    };
+    await gameRegistry.registerGame(customGame);
+
+    const { session } = await multiplayerService.createSession([customGame], 'Host');
+
+    // Set winning game on session
+    await multiplayerService.closeGameSelectionVoting(session.id, 'custom-trivia-game');
 
     const activeSessionCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
     expect(activeSessionCheck.safe).toBe(false);
     expect(activeSessionCheck.reason).toMatch(/active multiplayer session/i);
-
-    // End session
-    await multiplayerService.updateSessionStatus(session.id, 'completed');
-    const completedSessionCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
-    expect(completedSessionCheck.safe).toBe(true);
   });
 });

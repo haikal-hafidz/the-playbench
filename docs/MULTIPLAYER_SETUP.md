@@ -10,8 +10,11 @@ This document outlines the PostgreSQL schema, Row Level Security (RLS) policies,
 
 1. **Anonymous / Host Authentication**: Hosts can be authenticated users (via Supabase Auth) or guest hosts with cryptographic host tokens. Players participate without requiring mandatory Supabase user accounts, joining with unique session codes and display names.
 2. **Session Isolation**: Participants only have access to their active session. Row Level Security policies ensure players cannot read or modify data from unrelated sessions.
-3. **Host Administration**: Only the session creator (Host) has permission to change session status (`waiting`, `in-progress`, `voting`, `completed`, `paused`), configure rounds, and advance game phases.
-4. **Enforced One-Vote-Per-Player**: The database enforces a `UNIQUE(voting_round_id, participant_id)` constraint on submitted votes, guaranteeing that duplicate voting is prevented at the database level.
+3. **Host Administration**: Only the session creator (Host) has permission to change session status (`waiting`, `voting`, `starting`, `in-progress`, `completed`), open/close game selection voting, and launch the winning game.
+4. **Game Selection Voting**:
+   - The voting system is dedicated to deciding **which game the multiplayer session will play**.
+   - Each player gets exactly **one active vote**. A player may change their selection before voting closes, in which case their previous vote is replaced, not added.
+   - The database enforces a `UNIQUE(session_id, participant_id)` constraint on `session_game_votes`.
 5. **Realtime Broadcast & Postgres Changes**: Tables are added to Supabase Realtime publication to broadcast state changes to all connected clients.
 
 ---
@@ -26,11 +29,9 @@ CREATE TABLE IF NOT EXISTS public.multiplayer_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code VARCHAR(8) UNIQUE NOT NULL,
     host_id TEXT NOT NULL,
-    game_id TEXT NOT NULL,
-    game_title TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('waiting', 'in-progress', 'voting', 'completed', 'paused')),
-    current_round INTEGER NOT NULL DEFAULT 1,
-    max_rounds INTEGER NOT NULL DEFAULT 5,
+    status TEXT NOT NULL CHECK (status IN ('waiting', 'voting', 'ready-to-start', 'in-progress', 'completed')),
+    winning_game_id TEXT,
+    winning_game_title TEXT,
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
@@ -55,46 +56,19 @@ CREATE TABLE IF NOT EXISTS public.session_participants (
 
 CREATE INDEX IF NOT EXISTS idx_session_participants_session ON public.session_participants (session_id);
 
--- 3. Create session_game_state table
-CREATE TABLE IF NOT EXISTS public.session_game_state (
-    session_id UUID PRIMARY KEY REFERENCES public.multiplayer_sessions(id) ON DELETE CASCADE,
-    round_number INTEGER NOT NULL DEFAULT 1,
-    phase TEXT NOT NULL, -- 'waiting', 'question', 'answering', 'voting', 'results', 'game-over'
-    prompt TEXT NOT NULL DEFAULT '',
-    options JSONB NOT NULL DEFAULT '[]'::jsonb,
-    scores JSONB NOT NULL DEFAULT '{}'::jsonb,
-    timer_seconds INTEGER,
-    phase_ends_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
-);
-
--- 4. Create session_voting_rounds table
-CREATE TABLE IF NOT EXISTS public.session_voting_rounds (
+-- 3. Create session_game_votes table with strict one-vote-per-participant constraint
+CREATE TABLE IF NOT EXISTS public.session_game_votes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id UUID NOT NULL REFERENCES public.multiplayer_sessions(id) ON DELETE CASCADE,
-    round_number INTEGER NOT NULL DEFAULT 1,
-    prompt TEXT NOT NULL,
-    options JSONB NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
-    duration_seconds INTEGER,
-    closes_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
-);
-
-CREATE INDEX IF NOT EXISTS idx_voting_rounds_session ON public.session_voting_rounds (session_id);
-
--- 5. Create session_votes table with strict one-vote constraint
-CREATE TABLE IF NOT EXISTS public.session_votes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    voting_round_id UUID NOT NULL REFERENCES public.session_voting_rounds(id) ON DELETE CASCADE,
     session_id UUID NOT NULL REFERENCES public.multiplayer_sessions(id) ON DELETE CASCADE,
     participant_id UUID NOT NULL REFERENCES public.session_participants(id) ON DELETE CASCADE,
-    option_id TEXT NOT NULL,
+    game_id TEXT NOT NULL,
+    game_title TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
-    CONSTRAINT unique_vote_per_participant UNIQUE (voting_round_id, participant_id)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT unique_vote_per_participant_per_session UNIQUE (session_id, participant_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_session_votes_round ON public.session_votes (voting_round_id);
+CREATE INDEX IF NOT EXISTS idx_session_game_votes_session ON public.session_game_votes (session_id);
 ```
 
 ---
@@ -107,9 +81,7 @@ Enable Row Level Security on all multiplayer tables to ensure isolated and autho
 -- Enable RLS
 ALTER TABLE public.multiplayer_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.session_participants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.session_game_state ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.session_voting_rounds ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.session_votes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.session_game_votes ENABLE ROW LEVEL SECURITY;
 
 -- multiplayer_sessions:
 -- Anyone can view active sessions (to look up by code and join)
@@ -122,7 +94,7 @@ CREATE POLICY "Insert session"
     ON public.multiplayer_sessions FOR INSERT
     WITH CHECK (true);
 
--- Only host can update or delete session
+-- Host can update session status and winning game
 CREATE POLICY "Update session"
     ON public.multiplayer_sessions FOR UPDATE
     USING (true);
@@ -143,38 +115,20 @@ CREATE POLICY "Update participant presence"
     ON public.session_participants FOR UPDATE
     USING (true);
 
--- session_game_state:
--- Anyone in session can read state
-CREATE POLICY "Read game state"
-    ON public.session_game_state FOR SELECT
+-- session_game_votes:
+-- Anyone in session can view game votes to see real-time tally
+CREATE POLICY "Read session game votes"
+    ON public.session_game_votes FOR SELECT
     USING (true);
 
--- Host can update game state
-CREATE POLICY "Upsert game state"
-    ON public.session_game_state FOR ALL
-    USING (true);
-
--- session_voting_rounds:
--- Anyone can read voting rounds
-CREATE POLICY "Read voting rounds"
-    ON public.session_voting_rounds FOR SELECT
-    USING (true);
-
--- Host can create and update voting rounds
-CREATE POLICY "Host manage voting rounds"
-    ON public.session_voting_rounds FOR ALL
-    USING (true);
-
--- session_votes:
--- Anyone in session can view votes / aggregated results
-CREATE POLICY "Read session votes"
-    ON public.session_votes FOR SELECT
-    USING (true);
-
--- Participants can submit their single vote
-CREATE POLICY "Submit vote"
-    ON public.session_votes FOR INSERT
+-- Participants can insert or update their single vote (upsert)
+CREATE POLICY "Submit game vote"
+    ON public.session_game_votes FOR INSERT
     WITH CHECK (true);
+
+CREATE POLICY "Change game vote"
+    ON public.session_game_votes FOR UPDATE
+    USING (true);
 ```
 
 ---
@@ -186,9 +140,7 @@ Enable Realtime replication for multiplayer tables so clients receive real-time 
 ```sql
 ALTER PUBLICATION supabase_realtime ADD TABLE public.multiplayer_sessions;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.session_participants;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.session_game_state;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.session_voting_rounds;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.session_votes;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.session_game_votes;
 ```
 
 ---

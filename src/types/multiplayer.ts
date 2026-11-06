@@ -1,28 +1,28 @@
 /**
  * Multiplayer Data Models and Contracts for The Playbench (Stage 7)
+ * Focuses on session lifecycle and game selection voting.
  */
 
-export type SessionStatus = 'waiting' | 'in-progress' | 'voting' | 'completed' | 'paused';
-
-export type GamePhase = 'waiting' | 'question' | 'answering' | 'voting' | 'results' | 'game-over';
+export type SessionStatus =
+  | 'waiting'
+  | 'voting'
+  | 'ready-to-start'
+  | 'in-progress'
+  | 'completed';
 
 export interface SessionSettings {
   maxPlayers?: number;
   votingDurationSeconds?: number;
-  allowVoteChange?: boolean;
-  tieBreakerRule?: 'random' | 'host-choice' | 'split-points' | 'unanimous';
-  pointsPerCorrectVote?: number;
+  tieBreakerRule?: 'random' | 'host-choice' | 'first-to-score';
 }
 
 export interface MultiplayerSession {
   id: string;
   code: string;
   host_id: string;
-  game_id: string;
-  game_title: string;
   status: SessionStatus;
-  current_round: number;
-  max_rounds: number;
+  winning_game_id?: string;
+  winning_game_title?: string;
   settings: SessionSettings;
   created_at: string;
   updated_at: string;
@@ -39,46 +39,30 @@ export interface SessionParticipant {
   last_heartbeat: string;
 }
 
-export interface SessionGameState {
+export interface GameVote {
+  id: string;
   session_id: string;
-  round_number: number;
-  phase: GamePhase;
-  prompt: string;
-  options: Array<{ id: string; text: string; details?: string }>;
-  scores: Record<string, number>; // participant_id -> score
-  timer_seconds?: number;
-  phase_ends_at?: string;
+  participant_id: string;
+  game_id: string;
+  game_title: string;
+  created_at: string;
   updated_at: string;
 }
 
-export interface VotingRound {
-  id: string;
-  session_id: string;
-  round_number: number;
-  prompt: string;
-  options: Array<{ id: string; text: string; color?: string }>;
-  status: 'open' | 'closed';
-  duration_seconds: number;
-  closes_at?: string;
-  created_at: string;
+export interface GameVoteTally {
+  gameId: string;
+  gameTitle: string;
+  voteCount: number;
+  percentage: number;
+  voterNames: string[];
 }
 
-export interface SessionVote {
-  id: string;
-  voting_round_id: string;
-  session_id: string;
-  participant_id: string;
-  option_id: string;
-  created_at: string;
-}
-
-export interface VotingResult {
-  roundId: string;
+export interface GameSelectionVotingState {
   status: 'open' | 'closed';
   totalVotes: number;
-  counts: Record<string, number>; // option_id -> count
-  percentages: Record<string, number>; // option_id -> percentage (0-100)
-  winningOptionIds: string[];
+  tallies: Record<string, GameVoteTally>; // gameId -> tally
+  winningGameId?: string;
+  winningGameTitle?: string;
   isTie: boolean;
-  tieBreakerApplied?: string;
+  tiedGameIds: string[];
 }
