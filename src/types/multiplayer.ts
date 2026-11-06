@@ -22,10 +22,12 @@ export interface SessionSettings {
 export interface SessionParticipant {
   id: string; // Unique internal player ID (UUID)
   session_id: string;
-  participant_token: string;
+  participant_token?: string;
   player_name: string; // Clean display name shown in UI
   original_name?: string; // Input name before duplicate disambiguation
   role: 'host' | 'player';
+  color?: string;
+  ready?: boolean;
   is_connected: boolean;
   joined_at: string;
   last_heartbeat: string;
@@ -81,6 +83,16 @@ export interface GameLeaderboard {
   finalized_at: string;
 }
 
+export interface RoomDiscoveryInfo {
+  id: string;
+  code: string;
+  status: SessionStatus;
+  participant_count: number;
+  max_participants: number;
+  game_count: number;
+  created_at: string;
+}
+
 export interface MultiplayerSession {
   id: string;
   code: string;
@@ -91,6 +103,7 @@ export interface MultiplayerSession {
   current_game_id?: string;
   current_game_title?: string;
   settings: SessionSettings;
+  available_games?: import('../types').Game[];
   game_history: GameLeaderboard[];
   created_at: string;
   updated_at: string;

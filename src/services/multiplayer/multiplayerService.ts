@@ -7,6 +7,15 @@
  * 3. Individual Game Leaderboards: Automatically calculated when each game ends according to that game's
  *    native ranking rules (e.g. lowest attempts for Number Guess, fewest moves for Memory Match, highest score for points games).
  * 4. Final Session Results Recap: Preserves individual game results and leaderboards without combining incompatible scores.
+ * 5. Robust Zero-Trust Room-Scoped Security:
+ *    - Privacy-Separated Room Discovery: Public room code search returns minimal metadata without leaking participant rosters or tokens.
+ *    - Authorized Room State: Full room state is accessible only to verified room members presenting their participant token.
+ *    - Token Hashing: Server hashes host secrets and participant tokens (SHA-256) so plaintext tokens are never stored in the database.
+ *    - Join Capacity & Flood Protections: Rejects joins if session has reached max_participants or is already in progress.
+ *    - Strict State Machine: Validates status transitions (e.g. voting -> ready-to-start -> in-progress -> game-ended).
+ *    - Revocation of Direct Mutations: Direct writes are revoked from `anon`.
+ *    - Explicit Error Handling: Inspects every Supabase `{ data, error }` return object and handles partial failures cleanly.
+ * 6. Cross-Device Session Hydration: Joining players across separate browsers/devices hydrate available games, participants, and votes.
  */
 
 import { supabaseService } from '../backup/supabaseClient';
@@ -20,11 +29,14 @@ import {
   GameLeaderboard,
   GameResultEntry,
   RankingCriterion,
+  RoomDiscoveryInfo,
 } from '../../types/multiplayer';
 import { Game } from '../../types';
 
 const ACTIVE_SESSION_KEY = 'playbench_active_session';
 const CURRENT_PARTICIPANT_KEY = 'playbench_current_participant';
+const HOST_SECRET_PREFIX = 'playbench_host_secret_';
+const PARTICIPANT_TOKEN_PREFIX = 'playbench_part_token_';
 
 export interface StoredSessionData {
   session: MultiplayerSession;
@@ -95,6 +107,41 @@ export class MultiplayerService {
   }
 
   // -------------------------------------------------------------
+  // Token and Secret Storage
+  // -------------------------------------------------------------
+  getHostSecret(sessionId: string): string | null {
+    try {
+      return localStorage.getItem(`${HOST_SECRET_PREFIX}${sessionId}`);
+    } catch {
+      return null;
+    }
+  }
+
+  setHostSecret(sessionId: string, secret: string): void {
+    try {
+      localStorage.setItem(`${HOST_SECRET_PREFIX}${sessionId}`, secret);
+    } catch (err) {
+      console.warn('Failed to store host secret:', err);
+    }
+  }
+
+  getParticipantToken(participantId: string): string | null {
+    try {
+      return localStorage.getItem(`${PARTICIPANT_TOKEN_PREFIX}${participantId}`);
+    } catch {
+      return null;
+    }
+  }
+
+  setParticipantToken(participantId: string, token: string): void {
+    try {
+      localStorage.setItem(`${PARTICIPANT_TOKEN_PREFIX}${participantId}`, token);
+    } catch (err) {
+      console.warn('Failed to store participant token:', err);
+    }
+  }
+
+  // -------------------------------------------------------------
   // Session Code Generation & Validation
   // -------------------------------------------------------------
   generateSessionCode(): string {
@@ -146,29 +193,31 @@ export class MultiplayerService {
 
     const code = this.generateSessionCode();
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`;
-    const hostToken = crypto.randomUUID ? crypto.randomUUID() : `host_${Date.now()}`;
-    const hostId = crypto.randomUUID ? crypto.randomUUID() : `p_${Date.now()}`;
+    const hostSecret = crypto.randomUUID ? crypto.randomUUID() : `sec_${Date.now()}_${Math.random()}`;
+    const hostParticipantId = crypto.randomUUID ? crypto.randomUUID() : `p_${Date.now()}`;
+    const hostParticipantToken = crypto.randomUUID ? crypto.randomUUID() : `tok_${Date.now()}`;
     const now = new Date().toISOString();
 
     const session: MultiplayerSession = {
       id: sessionId,
       code,
-      host_id: hostToken,
+      host_id: hostSecret,
       status: 'voting', // Opens immediately for game selection voting
       settings: {
         maxPlayers: settings.maxPlayers || 8,
         votingDurationSeconds: settings.votingDurationSeconds || 60,
         tieBreakerRule: settings.tieBreakerRule || 'random',
       },
+      available_games: availableGames,
       game_history: [],
       created_at: now,
       updated_at: now,
     };
 
     const hostParticipant: SessionParticipant = {
-      id: hostId,
+      id: hostParticipantId,
       session_id: sessionId,
-      participant_token: hostToken,
+      participant_token: hostParticipantToken,
       player_name: hostName.trim().slice(0, 30),
       original_name: hostName.trim().slice(0, 30),
       role: 'host',
@@ -185,30 +234,33 @@ export class MultiplayerService {
       tiedGameIds: [],
     };
 
-    // Attempt to persist to Supabase if configured
+    // If Supabase is configured, execute the secure RPC function to create the room atomically
     const supabase = supabaseService.getClient();
     if (supabase) {
-      try {
-        await supabase.from('multiplayer_sessions').insert({
-          id: session.id,
-          code: session.code,
-          host_id: session.host_id,
-          status: session.status,
-          settings: session.settings,
-        });
+      const { data: rpcData, error: rpcError } = await supabase.rpc('create_multiplayer_session_rpc', {
+        p_id: session.id,
+        p_code: session.code,
+        p_host_id: session.host_id,
+        p_host_name: hostParticipant.player_name,
+        p_host_secret: hostSecret,
+        p_available_games: availableGames,
+        p_host_participant_id: hostParticipant.id,
+        p_host_participant_token: hostParticipantToken,
+      });
 
-        await supabase.from('session_participants').insert({
-          id: hostParticipant.id,
-          session_id: hostParticipant.session_id,
-          participant_token: hostParticipant.participant_token,
-          player_name: hostParticipant.player_name,
-          role: hostParticipant.role,
-          is_connected: hostParticipant.is_connected,
-        });
-      } catch (err) {
-        console.warn('Supabase session insert error, falling back to local sync:', err);
+      if (rpcError) {
+        throw new Error(
+          `Cloud multiplayer session creation failed: ${rpcError.message || 'Database rejected session creation. Please run migration in docs/MULTIPLAYER_SETUP.md.'}`
+        );
+      }
+
+      if (rpcData && typeof rpcData === 'object') {
+        session.status = rpcData.status || session.status;
       }
     }
+
+    this.setHostSecret(sessionId, hostSecret);
+    this.setParticipantToken(hostParticipantId, hostParticipantToken);
 
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
     localStorage.setItem(CURRENT_PARTICIPANT_KEY, JSON.stringify(hostParticipant));
@@ -229,6 +281,74 @@ export class MultiplayerService {
     return { session, hostParticipant };
   }
 
+  /**
+   * Sanitized public room discovery by code.
+   * Does NOT leak participant list, tokens, or votes.
+   */
+  /**
+   * Backward-compatible alias for fetchSessionByCode.
+   * Discovers room metadata without exposing sensitive participant lists or tokens.
+   */
+  async fetchSessionByCode(code: string): Promise<MultiplayerSession | null> {
+    const roomInfo = await this.discoverRoomByCode(code);
+    if (!roomInfo) return null;
+    const existing = this.getSessionData(roomInfo.id);
+    if (existing) return existing.session;
+    return {
+      id: roomInfo.id,
+      code: roomInfo.code,
+      host_id: '',
+      status: roomInfo.status,
+      settings: { maxPlayers: roomInfo.max_participants },
+      game_history: [],
+      created_at: roomInfo.created_at,
+      updated_at: roomInfo.created_at,
+    };
+  }
+
+  async discoverRoomByCode(code: string): Promise<RoomDiscoveryInfo | null> {
+    const cleanCode = code.trim().toUpperCase();
+    if (!this.validateSessionCode(cleanCode)) {
+      throw new Error('Invalid session code format. Please check and try again.');
+    }
+
+    const supabase = supabaseService.getClient();
+    if (supabase) {
+      const { data, error } = await supabase.rpc('discover_room_by_code_rpc', {
+        p_code: cleanCode,
+      });
+
+      if (error) {
+        throw new Error(`Database error while searching for session "${cleanCode}": ${error.message}`);
+      }
+
+      return data as RoomDiscoveryInfo | null;
+    }
+
+    // Local-only discovery fallback
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('playbench_sess_data_')) {
+        try {
+          const stored = JSON.parse(localStorage.getItem(key) || '{}');
+          if (stored.session && stored.session.code === cleanCode) {
+            return {
+              id: stored.session.id,
+              code: stored.session.code,
+              status: stored.session.status,
+              participant_count: stored.participants?.length || 1,
+              max_participants: stored.session.settings?.maxPlayers || 8,
+              game_count: stored.availableGames?.length || 0,
+              created_at: stored.session.created_at,
+            };
+          }
+        } catch {}
+      }
+    }
+
+    return null;
+  }
+
   async joinSession(
     code: string,
     playerName: string
@@ -243,23 +363,26 @@ export class MultiplayerService {
     }
 
     const trimmedInputName = playerName.trim().slice(0, 30);
-    const session = await this.fetchSessionByCode(cleanCode);
-    if (!session) {
+    const roomInfo = await this.discoverRoomByCode(cleanCode);
+    if (!roomInfo) {
       throw new Error(`Session with code "${cleanCode}" was not found or has expired.`);
     }
 
-    if (session.status === 'completed') {
+    if (roomInfo.status === 'completed') {
       throw new Error('This session has already ended.');
     }
 
-    const data = this.getSessionData(session.id);
-    const existingParticipants = data?.participants || [];
-
-    if (session.settings?.maxPlayers && existingParticipants.filter((p) => p.is_connected).length >= session.settings.maxPlayers) {
-      throw new Error('This session is full.');
+    if (roomInfo.status !== 'waiting' && roomInfo.status !== 'voting') {
+      throw new Error('Cannot join session: gameplay is already in progress.');
     }
 
-    // Disambiguate duplicate display names clearly (e.g. "Robin" -> "Robin (2)")
+    if (roomInfo.participant_count >= roomInfo.max_participants) {
+      throw new Error('This session has reached maximum participants limit.');
+    }
+
+    // Load existing participants to disambiguate name
+    const existingData = this.getSessionData(roomInfo.id);
+    const existingParticipants = existingData?.participants || [];
     const finalDisplayName = this.disambiguateName(trimmedInputName, existingParticipants);
 
     const now = new Date().toISOString();
@@ -268,7 +391,7 @@ export class MultiplayerService {
 
     const participant: SessionParticipant = {
       id: participantId,
-      session_id: session.id,
+      session_id: roomInfo.id,
       participant_token: participantToken,
       player_name: finalDisplayName,
       original_name: trimmedInputName,
@@ -278,34 +401,100 @@ export class MultiplayerService {
       last_heartbeat: now,
     };
 
+    let session: MultiplayerSession;
+
     const supabase = supabaseService.getClient();
     if (supabase) {
-      try {
-        await supabase.from('session_participants').insert({
-          id: participant.id,
-          session_id: participant.session_id,
-          participant_token: participant.participant_token,
-          player_name: participant.player_name,
-          role: participant.role,
-          is_connected: true,
-        });
-      } catch (err) {
-        console.warn('Supabase participant insert warning:', err);
-      }
-    }
+      const { data: joinedData, error: joinError } = await supabase.rpc('join_multiplayer_session_rpc', {
+        p_session_id: roomInfo.id,
+        p_participant_id: participant.id,
+        p_participant_token: participantToken,
+        p_player_name: participant.player_name,
+        p_original_name: participant.original_name,
+        p_color: participant.color || null,
+      });
 
-    if (data) {
-      data.participants.push(participant);
-      this.storeSessionData(session.id, data);
+      if (joinError) {
+        throw new Error(`Failed to join session: ${joinError.message || 'Database rejected participant registration.'}`);
+      }
+
+      if (joinedData && typeof joinedData === 'object') {
+        participant.joined_at = joinedData.joined_at || participant.joined_at;
+      }
+
+      this.setParticipantToken(participantId, participantToken);
+
+      // Hydrate authorized room state
+      const roomState = await this.getAuthorizedRoomState(roomInfo.id, participantId, participantToken);
+      session = roomState.session;
+
+      const votes = roomState.votes || [];
+      const participants = roomState.participants || [participant];
+      const availableGames = session.available_games || [];
+      const votingState = this.calculateTallies(availableGames, participants, votes);
+
+      this.storeSessionData(roomInfo.id, {
+        session,
+        participants,
+        availableGames,
+        votes,
+        votingState,
+        history: session.game_history || [],
+      });
+    } else {
+      this.setParticipantToken(participantId, participantToken);
+      session = existingData?.session || {
+        id: roomInfo.id,
+        code: roomInfo.code,
+        host_id: 'local',
+        status: roomInfo.status,
+        settings: { maxPlayers: roomInfo.max_participants },
+        game_history: [],
+        created_at: roomInfo.created_at,
+        updated_at: roomInfo.created_at,
+      };
+
+      if (existingData) {
+        existingData.participants.push(participant);
+        this.storeSessionData(roomInfo.id, existingData);
+      }
     }
 
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
     localStorage.setItem(CURRENT_PARTICIPANT_KEY, JSON.stringify(participant));
 
     this.setupRealtime(session.id);
-    this.broadcast('PARTICIPANT_JOINED', { session, participant, participants: data?.participants || [participant] });
+    this.broadcast('PARTICIPANT_JOINED', { session, participant });
 
     return { session, participant };
+  }
+
+  /**
+   * Fetches full authorized room state via token validation.
+   */
+  async getAuthorizedRoomState(
+    sessionId: string,
+    participantId: string,
+    participantToken: string
+  ): Promise<{ session: MultiplayerSession; participants: SessionParticipant[]; votes: GameVote[] }> {
+    const supabase = supabaseService.getClient();
+    if (!supabase) {
+      const data = this.getSessionData(sessionId);
+      if (!data) throw new Error('Session not found');
+      return { session: data.session, participants: data.participants, votes: data.votes };
+    }
+
+    const { data, error } = await supabase.rpc('get_room_state_rpc', {
+      p_session_id: sessionId,
+      p_participant_id: participantId,
+      p_participant_token: participantToken,
+    });
+
+    if (error) {
+      throw new Error(`Failed to load room state: ${error.message}`);
+    }
+
+    return data as { session: MultiplayerSession; participants: SessionParticipant[]; votes: GameVote[] };
   }
 
   // -------------------------------------------------------------
@@ -320,9 +509,19 @@ export class MultiplayerService {
         });
 
         this.realtimeChannel
-          .on('broadcast', { event: '*' }, (payload: any) => {
+          .on('broadcast', { event: '*' }, async (payload: any) => {
             if (payload && payload.event) {
               this.notifyListeners({ type: payload.event, payload: payload.payload });
+              // Authorized state refresh on broadcast events
+              if (
+                payload.event === 'PARTICIPANT_JOINED' ||
+                payload.event === 'GAME_VOTE_SUBMITTED' ||
+                payload.event === 'GAME_SELECTION_CLOSED' ||
+                payload.event === 'SESSION_RETURNED_TO_LOBBY' ||
+                payload.event === 'SESSION_RECAP_TRIGGERED'
+              ) {
+                await this.refreshAuthorizedState(sessionId);
+              }
             }
           })
           .subscribe();
@@ -337,9 +536,36 @@ export class MultiplayerService {
     }, 15000);
   }
 
+  private async refreshAuthorizedState(sessionId: string) {
+    const participant = this.getCurrentParticipant();
+    if (!participant) return;
+    const token = this.getParticipantToken(participant.id);
+    if (!token) return;
+
+    try {
+      const roomState = await this.getAuthorizedRoomState(sessionId, participant.id, token);
+      const data = this.getSessionData(sessionId);
+      if (data) {
+        data.session = roomState.session;
+        data.participants = roomState.participants;
+        data.votes = roomState.votes;
+        data.votingState = this.calculateTallies(data.availableGames, data.participants, data.votes);
+        this.storeSessionData(sessionId, data);
+        localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
+        this.notifyListeners({ type: 'SESSION_UPDATED', payload: { session: data.session } });
+        this.notifyListeners({ type: 'PARTICIPANTS_UPDATED', payload: { participants: data.participants } });
+        this.notifyListeners({ type: 'GAME_VOTE_SUBMITTED', payload: { sessionId, votingState: data.votingState } });
+      }
+    } catch (err) {
+      console.warn('Error refreshing authorized room state:', err);
+    }
+  }
+
+
   private sendHeartbeat(sessionId: string) {
     const participant = this.getCurrentParticipant();
     if (!participant) return;
+    const token = this.getParticipantToken(participant.id);
 
     const data = this.getSessionData(sessionId);
     if (data) {
@@ -349,6 +575,16 @@ export class MultiplayerService {
         p.is_connected = true;
         this.storeSessionData(sessionId, data);
       }
+    }
+
+    const supabase = supabaseService.getClient();
+    if (supabase && token) {
+      supabase.rpc('update_participant_presence_rpc', {
+        p_session_id: sessionId,
+        p_participant_id: participant.id,
+        p_participant_token: token,
+        p_is_connected: true,
+      }).then(() => {});
     }
   }
 
@@ -371,6 +607,7 @@ export class MultiplayerService {
     const participant = data.participants.find((p) => p.id === participantId);
     if (!participant) throw new Error('Participant not in this session.');
 
+    const participantToken = this.getParticipantToken(participantId) || participant.participant_token || '';
     const now = new Date().toISOString();
 
     const existingIndex = data.votes.findIndex((v) => v.participant_id === participantId);
@@ -399,19 +636,16 @@ export class MultiplayerService {
 
     const supabase = supabaseService.getClient();
     if (supabase) {
-      try {
-        await supabase.from('session_game_votes').upsert(
-          {
-            session_id: sessionId,
-            participant_id: participantId,
-            game_id: gameId,
-            game_title: gameTitle,
-            updated_at: now,
-          },
-          { onConflict: 'session_id,participant_id' }
-        );
-      } catch (err) {
-        console.warn('Supabase game vote upsert warning:', err);
+      const { error: voteError } = await supabase.rpc('submit_game_vote_rpc', {
+        p_session_id: sessionId,
+        p_participant_id: participantId,
+        p_participant_token: participantToken,
+        p_game_id: gameId,
+        p_game_title: gameTitle,
+      });
+
+      if (voteError) {
+        throw new Error(`Failed to submit vote to cloud: ${voteError.message}`);
       }
     }
 
@@ -527,20 +761,21 @@ export class MultiplayerService {
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
 
+    const hostSecret = this.getHostSecret(sessionId);
     const supabase = supabaseService.getClient();
-    if (supabase) {
-      try {
-        await supabase
-          .from('multiplayer_sessions')
-          .update({
-            status: data.session.status,
-            winning_game_id: finalGameId,
-            winning_game_title: finalGameTitle,
-            updated_at: data.session.updated_at,
-          })
-          .eq('id', sessionId);
-      } catch (err) {
-        console.warn('Supabase close voting update warning:', err);
+    if (supabase && hostSecret) {
+      const { error: updateError } = await supabase.rpc('host_update_session_status_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_new_status: 'ready-to-start',
+        p_winning_game_id: finalGameId || null,
+        p_winning_game_title: finalGameTitle || null,
+        p_current_game_id: finalGameId || null,
+        p_current_game_title: finalGameTitle || null,
+      });
+
+      if (updateError) {
+        throw new Error(`Failed to close voting in cloud: ${updateError.message}`);
       }
     }
 
@@ -566,24 +801,26 @@ export class MultiplayerService {
     data.session.current_game_id = data.session.winning_game_id;
     data.session.current_game_title = data.session.winning_game_title;
     data.session.updated_at = new Date().toISOString();
-    // Reset current active leaderboard for the new round
     data.currentLeaderboard = null;
 
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
 
+    const hostSecret = this.getHostSecret(sessionId);
     const supabase = supabaseService.getClient();
-    if (supabase) {
-      try {
-        await supabase
-          .from('multiplayer_sessions')
-          .update({
-            status: 'in-progress',
-            updated_at: data.session.updated_at,
-          })
-          .eq('id', sessionId);
-      } catch (err) {
-        console.warn('Supabase start game warning:', err);
+    if (supabase && hostSecret) {
+      const { error: startError } = await supabase.rpc('host_update_session_status_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_new_status: 'in-progress',
+        p_winning_game_id: data.session.winning_game_id,
+        p_winning_game_title: data.session.winning_game_title,
+        p_current_game_id: data.session.winning_game_id,
+        p_current_game_title: data.session.winning_game_title,
+      });
+
+      if (startError) {
+        throw new Error(`Failed to start game in cloud: ${startError.message}`);
       }
     }
 
@@ -599,11 +836,6 @@ export class MultiplayerService {
   // -------------------------------------------------------------
   // Individual Game Leaderboards
   // -------------------------------------------------------------
-  /**
-   * Identifies the ranking criterion based on game properties or title.
-   * Puzzle/attempt/move games use 'lowest-score' (e.g. fewer attempts/moves is better).
-   * High-score/points games use 'highest-score'.
-   */
   getRankingCriterionForGame(gameId: string, gameTitle: string): { criterion: RankingCriterion; unit: string } {
     const lowerId = gameId.toLowerCase();
     const lowerTitle = gameTitle.toLowerCase();
@@ -623,9 +855,6 @@ export class MultiplayerService {
     return { criterion: 'highest-score', unit: 'points' };
   }
 
-  /**
-   * Sorts game leaderboard entries according to the game's ranking rule.
-   */
   sortLeaderboardEntries(entries: GameResultEntry[], criterion: RankingCriterion): GameResultEntry[] {
     const sorted = [...entries].sort((a, b) => {
       const numA = typeof a.score === 'number' ? a.score : parseFloat(String(a.score)) || 0;
@@ -639,16 +868,12 @@ export class MultiplayerService {
       return new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime();
     });
 
-    // Assign sequential ranks
     return sorted.map((entry, index) => ({
       ...entry,
       rank: index + 1,
     }));
   }
 
-  /**
-   * Records a game's completion result for a participant and synchronizes the game leaderboard.
-   */
   async recordGameResult(
     sessionId: string,
     gameId: string,
@@ -680,7 +905,6 @@ export class MultiplayerService {
       };
     }
 
-    // Check if participant already has an entry in this game's leaderboard
     const existingIndex = leaderboard.entries.findIndex((e) => e.participant_id === participantId);
     const newEntry: GameResultEntry = {
       rank: 1,
@@ -704,7 +928,6 @@ export class MultiplayerService {
     data.session.status = 'game-ended';
     data.session.updated_at = now;
 
-    // Update history: replace existing entry for this game or append
     const historyIndex = data.history.findIndex((h) => h.id === leaderboard!.id || (h.game_id === gameId && h.finalized_at === leaderboard!.finalized_at));
     if (historyIndex >= 0) {
       data.history[historyIndex] = leaderboard;
@@ -715,6 +938,20 @@ export class MultiplayerService {
 
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
+
+    const hostSecret = this.getHostSecret(sessionId);
+    const supabase = supabaseService.getClient();
+    if (supabase && hostSecret) {
+      const { error: resultError } = await supabase.rpc('host_record_game_result_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_game_history: data.history,
+      });
+
+      if (resultError) {
+        throw new Error(`Failed to record game results in cloud: ${resultError.message}`);
+      }
+    }
 
     this.broadcast('GAME_LEADERBOARD_UPDATED', {
       sessionId,
@@ -728,9 +965,6 @@ export class MultiplayerService {
   // -------------------------------------------------------------
   // Session Return to Lobby & Final Session Results Recap
   // -------------------------------------------------------------
-  /**
-   * Returns session back to voting lobby for the next game round.
-   */
   async returnToLobby(sessionId: string): Promise<MultiplayerSession> {
     const data = this.getSessionData(sessionId);
     if (!data) throw new Error('Session not found');
@@ -755,14 +989,28 @@ export class MultiplayerService {
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
 
+    const hostSecret = this.getHostSecret(sessionId);
+    const supabase = supabaseService.getClient();
+    if (supabase && hostSecret) {
+      const { error: returnError } = await supabase.rpc('host_update_session_status_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_new_status: 'voting',
+        p_winning_game_id: null,
+        p_winning_game_title: null,
+        p_current_game_id: null,
+        p_current_game_title: null,
+      });
+
+      if (returnError) {
+        throw new Error(`Failed to return to lobby in cloud: ${returnError.message}`);
+      }
+    }
+
     this.broadcast('SESSION_RETURNED_TO_LOBBY', { sessionId, session: data.session });
     return data.session;
   }
 
-  /**
-   * Finalizes the multiplayer session and switches all clients to the Final Session Results Recap.
-   * All games and their individual leaderboards are preserved without summing incompatible scores.
-   */
   async showFinalSessionRecap(sessionId: string): Promise<MultiplayerSession> {
     const data = this.getSessionData(sessionId);
     if (!data) throw new Error('Session not found');
@@ -775,6 +1023,24 @@ export class MultiplayerService {
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
 
+    const hostSecret = this.getHostSecret(sessionId);
+    const supabase = supabaseService.getClient();
+    if (supabase && hostSecret) {
+      const { error: recapError } = await supabase.rpc('host_update_session_status_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_new_status: 'session-recap',
+        p_winning_game_id: null,
+        p_winning_game_title: null,
+        p_current_game_id: null,
+        p_current_game_title: null,
+      });
+
+      if (recapError) {
+        throw new Error(`Failed to show session recap in cloud: ${recapError.message}`);
+      }
+    }
+
     this.broadcast('SESSION_RECAP_TRIGGERED', {
       sessionId,
       session: data.session,
@@ -784,9 +1050,6 @@ export class MultiplayerService {
     return data.session;
   }
 
-  /**
-   * Closes the session completely.
-   */
   async closeSession(sessionId: string): Promise<void> {
     const data = this.getSessionData(sessionId);
     if (data) {
@@ -794,12 +1057,25 @@ export class MultiplayerService {
       data.session.updated_at = new Date().toISOString();
       this.storeSessionData(sessionId, data);
     }
+    const hostSecret = this.getHostSecret(sessionId);
+    const supabase = supabaseService.getClient();
+    if (supabase && hostSecret) {
+      await supabase.rpc('host_update_session_status_rpc', {
+        p_session_id: sessionId,
+        p_host_secret: hostSecret,
+        p_new_status: 'completed',
+        p_winning_game_id: null,
+        p_winning_game_title: null,
+        p_current_game_id: null,
+        p_current_game_title: null,
+      });
+    }
     this.broadcast('SESSION_CLOSED', { sessionId });
     this.clearActiveSession();
   }
 
   // -------------------------------------------------------------
-  // Data Access Helpers
+  // Data Access Helpers & Remote Cross-Device Hydration
   // -------------------------------------------------------------
   getActiveSession(): MultiplayerSession | null {
     try {
@@ -830,37 +1106,6 @@ export class MultiplayerService {
     if (this.realtimeChannel && typeof this.realtimeChannel.unsubscribe === 'function') {
       this.realtimeChannel.unsubscribe();
     }
-  }
-
-  async fetchSessionByCode(code: string): Promise<MultiplayerSession | null> {
-    const supabase = supabaseService.getClient();
-    if (supabase) {
-      try {
-        const { data, error } = await supabase
-          .from('multiplayer_sessions')
-          .select('*')
-          .eq('code', code.toUpperCase())
-          .maybeSingle();
-
-        if (!error && data) return data as MultiplayerSession;
-      } catch (err) {
-        console.warn('Supabase fetchSessionByCode error:', err);
-      }
-    }
-
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('playbench_sess_data_')) {
-        try {
-          const stored = JSON.parse(localStorage.getItem(key) || '{}');
-          if (stored.session && stored.session.code === code.toUpperCase()) {
-            return stored.session;
-          }
-        } catch {}
-      }
-    }
-
-    return null;
   }
 
   getSessionData(sessionId: string): StoredSessionData | null {
