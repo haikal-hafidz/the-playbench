@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { multiplayerService } from '../multiplayerService';
+import { supabaseService } from '../../backup/supabaseClient';
 import { gameRegistry, BUNDLED_GAMES } from '../../games/gameRegistry';
 import {
   getUserRole,
@@ -33,6 +34,7 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
   beforeEach(() => {
     localStorage.clear();
     multiplayerService.clearActiveSession();
+    vi.restoreAllMocks();
   });
 
   describe('Role Selection & Gate Storage', () => {
@@ -126,6 +128,236 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
     });
   });
 
+  describe('Supabase Error Inspection & Zero-Trust RPC Room Security', () => {
+    it('explicitly throws actionable error when Supabase create_multiplayer_session_rpc fails', async () => {
+      const mockRpc = vi.fn().mockResolvedValue({
+        data: null,
+        error: { message: 'relation "multiplayer_sessions" does not exist' },
+      });
+
+      const mockClient = {
+        rpc: mockRpc,
+      } as any;
+
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      await expect(
+        multiplayerService.createSession(SAMPLE_GAMES, 'Host Fox')
+      ).rejects.toThrow(/Cloud multiplayer session creation failed: relation "multiplayer_sessions" does not exist/i);
+    });
+
+    it('protects room privacy: discoverRoomByCode returns only sanitized metadata without leaking rosters or tokens', async () => {
+      const mockDiscoveryData = {
+        id: 'sess-disc-1',
+        code: 'DSC123',
+        status: 'voting',
+        participant_count: 3,
+        max_participants: 12,
+        game_count: 2,
+        created_at: new Date().toISOString(),
+      };
+
+      const mockClient = {
+        rpc: vi.fn().mockImplementation((fn: string) => {
+          if (fn === 'discover_room_by_code_rpc') {
+            return Promise.resolve({ data: mockDiscoveryData, error: null });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }),
+      } as any;
+
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      const discovery = await multiplayerService.discoverRoomByCode('DSC123');
+      expect(discovery).toBeDefined();
+      expect(discovery?.code).toBe('DSC123');
+      expect(discovery?.participant_count).toBe(3);
+      expect((discovery as any).participants).toBeUndefined();
+      expect((discovery as any).host_secret).toBeUndefined();
+      expect((discovery as any).votes).toBeUndefined();
+    });
+
+    it('enforces join capacity limit and throws actionable error when session is full', async () => {
+      const mockClient = {
+        rpc: vi.fn().mockImplementation((fn: string) => {
+          if (fn === 'discover_room_by_code_rpc') {
+            return Promise.resolve({
+              data: {
+                id: 'sess-full',
+                code: 'FULL01',
+                status: 'voting',
+                participant_count: 12,
+                max_participants: 12,
+                game_count: 2,
+                created_at: new Date().toISOString(),
+              },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }),
+      } as any;
+
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      await expect(
+        multiplayerService.joinSession('FULL01', 'Player Alice')
+      ).rejects.toThrow(/reached maximum participants limit/i);
+    });
+
+    it('rejects joining when game is already in progress', async () => {
+      const mockClient = {
+        rpc: vi.fn().mockImplementation((fn: string) => {
+          if (fn === 'discover_room_by_code_rpc') {
+            return Promise.resolve({
+              data: {
+                id: 'sess-play',
+                code: 'PLAY01',
+                status: 'in-progress',
+                participant_count: 2,
+                max_participants: 12,
+                game_count: 2,
+                created_at: new Date().toISOString(),
+              },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }),
+      } as any;
+
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      await expect(
+        multiplayerService.joinSession('PLAY01', 'Player Alice')
+      ).rejects.toThrow(/gameplay is already in progress/i);
+    });
+
+    it('hydrates session data and available games from cloud across separate devices via get_room_state_rpc', async () => {
+      const mockSessionData = {
+        id: 'sess-cloud-1',
+        code: 'CLD123',
+        host_id: 'host-1',
+        status: 'voting',
+        settings: { maxPlayers: 6 },
+        available_games: SAMPLE_GAMES,
+        game_history: [],
+      };
+
+      const mockParticipants = [
+        {
+          id: 'host-p-1',
+          session_id: 'sess-cloud-1',
+          player_name: 'Host Master',
+          role: 'host',
+          is_connected: true,
+          joined_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+        },
+      ];
+
+      const mockClient = {
+        rpc: vi.fn().mockImplementation((fn: string) => {
+          if (fn === 'discover_room_by_code_rpc') {
+            return Promise.resolve({
+              data: {
+                id: 'sess-cloud-1',
+                code: 'CLD123',
+                status: 'voting',
+                participant_count: 1,
+                max_participants: 6,
+                game_count: SAMPLE_GAMES.length,
+                created_at: new Date().toISOString(),
+              },
+              error: null,
+            });
+          }
+          if (fn === 'join_multiplayer_session_rpc') {
+            return Promise.resolve({
+              data: {
+                id: 'p-new-1',
+                session_id: 'sess-cloud-1',
+                player_name: 'Joining Player',
+                role: 'player',
+                joined_at: new Date().toISOString(),
+              },
+              error: null,
+            });
+          }
+          if (fn === 'get_room_state_rpc') {
+            return Promise.resolve({
+              data: {
+                session: mockSessionData,
+                participants: mockParticipants,
+                votes: [],
+              },
+              error: null,
+            });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }),
+      } as any;
+
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      const { session, participant } = await multiplayerService.joinSession('CLD123', 'Joining Player');
+      expect(session).toBeDefined();
+      expect(participant.player_name).toBe('Joining Player');
+
+      const hydrated = multiplayerService.getSessionData('sess-cloud-1');
+      expect(hydrated).toBeDefined();
+      expect(hydrated?.availableGames).toHaveLength(SAMPLE_GAMES.length);
+      expect(hydrated?.participants).toHaveLength(1);
+      expect(hydrated?.participants[0].player_name).toBe('Host Master');
+    });
+
+    it('submits votes with participant token verification through submit_game_vote_rpc', async () => {
+      const mockRpc = vi.fn().mockImplementation((fn: string) => {
+        if (fn === 'submit_game_vote_rpc') {
+          return Promise.resolve({ data: { id: 'vote-1' }, error: null });
+        }
+        return Promise.resolve({ data: null, error: null });
+      });
+
+      const mockClient = { rpc: mockRpc } as any;
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      const { session, hostParticipant } = await multiplayerService.createSession(SAMPLE_GAMES, 'Host');
+      const token = multiplayerService.getParticipantToken(hostParticipant.id);
+      expect(token).toBeDefined();
+
+      const res = await multiplayerService.submitGameVote(session.id, hostParticipant.id, 'number-guess', 'Number Guess');
+      expect(res.success).toBe(true);
+      expect(mockRpc).toHaveBeenCalledWith('submit_game_vote_rpc', expect.objectContaining({
+        p_session_id: session.id,
+        p_participant_id: hostParticipant.id,
+        p_participant_token: token,
+        p_game_id: 'number-guess',
+      }));
+    });
+
+    it('rejects host status operations if unauthorized in cloud RPC', async () => {
+      const mockRpc = vi.fn().mockImplementation((fn: string) => {
+        if (fn === 'host_update_session_status_rpc') {
+          return Promise.resolve({
+            data: null,
+            error: { message: 'Unauthorized: only the host can update session status.' },
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      });
+
+      const mockClient = { rpc: mockRpc } as any;
+      vi.spyOn(supabaseService, 'getClient').mockReturnValue(mockClient);
+
+      const { session } = await multiplayerService.createSession(SAMPLE_GAMES, 'Host');
+
+      await expect(
+        multiplayerService.closeGameSelectionVoting(session.id)
+      ).rejects.toThrow(/Unauthorized: only the host can update session status/i);
+    });
+  });
+
   describe('Game Selection Voting Engine', () => {
     it('allows players to vote for exactly one game and tally votes correctly', async () => {
       const { session } = await multiplayerService.createSession(
@@ -136,7 +368,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
       const { participant: p2 } = await multiplayerService.joinSession(session.code, 'Player 2');
 
-      // Player 1 votes for Number Guess
       await multiplayerService.submitGameVote(
         session.id,
         p1.id,
@@ -144,7 +375,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
         'Number Guess'
       );
 
-      // Player 2 votes for Memory Match
       const res2 = await multiplayerService.submitGameVote(
         session.id,
         p2.id,
@@ -166,14 +396,12 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
 
       const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
 
-      // Player 1 votes for Number Guess
       await multiplayerService.submitGameVote(session.id, p1.id, 'number-guess', 'Number Guess');
 
       let data = multiplayerService.getSessionData(session.id);
       expect(data?.votes).toHaveLength(1);
       expect(data?.votes[0].game_id).toBe('number-guess');
 
-      // Player 1 changes vote to Memory Match
       const updated = await multiplayerService.submitGameVote(
         session.id,
         p1.id,
@@ -182,7 +410,7 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       );
 
       data = multiplayerService.getSessionData(session.id);
-      expect(data?.votes).toHaveLength(1); // Still exactly one vote!
+      expect(data?.votes).toHaveLength(1);
       expect(data?.votes[0].game_id).toBe('memory-match');
       expect(updated.tally.tallies['number-guess'].voteCount).toBe(0);
       expect(updated.tally.tallies['memory-match'].voteCount).toBe(1);
@@ -194,21 +422,17 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
       const { participant: p2 } = await multiplayerService.joinSession(session.code, 'Player 2');
 
-      // Two votes for Memory Match
       await multiplayerService.submitGameVote(session.id, p1.id, 'memory-match', 'Memory Match');
       await multiplayerService.submitGameVote(session.id, p2.id, 'memory-match', 'Memory Match');
 
-      // Close voting
       const finalVotingState = await multiplayerService.closeGameSelectionVoting(session.id);
       expect(finalVotingState.status).toBe('closed');
       expect(finalVotingState.winningGameId).toBe('memory-match');
 
-      // Reject subsequent votes after voting closed
       await expect(
         multiplayerService.submitGameVote(session.id, p1.id, 'number-guess', 'Number Guess')
       ).rejects.toThrow(/already closed/i);
 
-      // Host starts game
       const startedGameId = await multiplayerService.startWinningGame(session.id);
       expect(startedGameId).toBe('memory-match');
 
@@ -227,7 +451,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
       const { participant: p2 } = await multiplayerService.joinSession(session.code, 'Player 2');
 
-      // Number Guess uses lowest-score (fewer attempts is better)
       await multiplayerService.recordGameResult(
         session.id,
         'number-guess',
@@ -255,16 +478,13 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
 
       expect(lb.ranking_criterion).toBe('lowest-score');
       expect(lb.entries.length).toBe(3);
-      // Winner has lowest score (3)
       expect(lb.entries[0].participant_id).toBe(p1.id);
       expect(lb.entries[0].rank).toBe(1);
       expect(lb.entries[0].score).toBe(3);
 
-      // Rank 2 has 5
       expect(lb.entries[1].participant_id).toBe(p2.id);
       expect(lb.entries[1].rank).toBe(2);
 
-      // Rank 3 has 7
       expect(lb.entries[2].participant_id).toBe(hostParticipant.id);
       expect(lb.entries[2].rank).toBe(3);
     });
@@ -305,7 +525,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       );
       const { participant: p1 } = await multiplayerService.joinSession(session.code, 'Player 1');
 
-      // Round 1: Number Guess (attempts)
       await multiplayerService.recordGameResult(
         session.id,
         'number-guess',
@@ -323,7 +542,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
         '6 attempts'
       );
 
-      // Return to lobby and play Round 2: Memory Match (moves)
       await multiplayerService.returnToLobby(session.id);
       await multiplayerService.recordGameResult(
         session.id,
@@ -342,7 +560,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
         '10 moves'
       );
 
-      // Conclude session and show final recap
       const recap = await multiplayerService.showFinalSessionRecap(session.id);
       expect(recap.status).toBe('session-recap');
       expect(recap.game_history.length).toBe(2);
@@ -352,11 +569,11 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
 
       expect(ng).toBeDefined();
       expect(ng?.unit_label).toBe('attempts');
-      expect(ng?.entries[0].participant_id).toBe(hostParticipant.id); // Winner had 4 attempts
+      expect(ng?.entries[0].participant_id).toBe(hostParticipant.id);
 
       expect(mm).toBeDefined();
       expect(mm?.unit_label).toBe('moves');
-      expect(mm?.entries[0].participant_id).toBe(p1.id); // Winner had 10 moves
+      expect(mm?.entries[0].participant_id).toBe(p1.id);
     });
   });
 
@@ -364,12 +581,10 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
     it('allows deleting both sample/bundled games and user-created games while protecting active sessions', async () => {
       await gameRegistry.init();
 
-      // 1. Sample/bundled games CAN be deleted when not in an active session
       const sampleGameId = BUNDLED_GAMES[0].id;
       const initialBundledCheck = await gameRegistry.canDeleteGame(sampleGameId);
       expect(initialBundledCheck.safe).toBe(true);
 
-      // 2. Active session game protection applies to any game (sample or user-created)
       const customGame: Game = {
         id: 'custom-trivia-game',
         title: 'Custom Trivia',
@@ -389,14 +604,12 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
 
       const { session } = await multiplayerService.createSession([customGame], 'Host');
 
-      // Set winning game on session
       await multiplayerService.closeGameSelectionVoting(session.id, 'custom-trivia-game');
 
       const activeSessionCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
       expect(activeSessionCheck.safe).toBe(false);
       expect(activeSessionCheck.reason).toMatch(/active multiplayer session/i);
 
-      // 3. User-created game CAN be deleted once active session is cleared
       multiplayerService.clearActiveSession();
       const clearedCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
       expect(clearedCheck.safe).toBe(true);
@@ -405,7 +618,6 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       const retrievedCustom = await gameRegistry.getGameById('custom-trivia-game');
       expect(retrievedCustom).toBeUndefined();
 
-      // 4. Sample game can be deleted and remains deleted across re-initialization
       await gameRegistry.deleteGame(sampleGameId);
       const allGamesAfterDelete = await gameRegistry.getAllGames();
       expect(allGamesAfterDelete.find((g) => g.id === sampleGameId)).toBeUndefined();

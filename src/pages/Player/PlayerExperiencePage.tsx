@@ -47,8 +47,8 @@ export const PlayerExperiencePage: React.FC = () => {
     if (session) {
       const data = multiplayerService.getSessionData(session.id);
       if (data) {
-        setParticipants(data.participants);
-        setAvailableGames(data.availableGames);
+        setParticipants(data.participants || []);
+        setAvailableGames(data.availableGames || []);
         setVotingState(data.votingState);
         setSessionHistory(data.history || []);
 
@@ -105,6 +105,12 @@ export const PlayerExperiencePage: React.FC = () => {
         sessionCode,
         playerName
       );
+      const data = multiplayerService.getSessionData(session.id);
+      if (data) {
+        setAvailableGames(data.availableGames || []);
+        setParticipants(data.participants || []);
+        setVotingState(data.votingState);
+      }
       setActiveSession(session);
       setCurrentParticipant(participant);
       refreshPlayerData();
