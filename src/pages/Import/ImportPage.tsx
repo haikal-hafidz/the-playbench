@@ -24,8 +24,8 @@ import { ImportMethod, ImportRecord } from '../../types';
 export const ImportPage: React.FC = () => {
   const navigate = useNavigate();
 
-  // Mode: Host Mode vs Player Mode
-  const [isHostMode, setIsHostMode] = useState<boolean>(() => {
+  // Mode: Host Mode vs Player Mode (Read-Only)
+  const [isHostMode] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('playbench_user_role');
       return stored ? stored === 'host' : true;
@@ -132,16 +132,6 @@ export const ImportPage: React.FC = () => {
       setHistoryRecords(records.sort((a, b) => b.importedAt - a.importedAt));
     } catch (err) {
       console.warn('Could not read import history from IndexedDB:', err);
-    }
-  };
-
-  const toggleHostMode = () => {
-    const nextMode = !isHostMode;
-    setIsHostMode(nextMode);
-    try {
-      localStorage.setItem('playbench_user_role', nextMode ? 'host' : 'player');
-    } catch (e) {
-      // Ignore localStorage errors
     }
   };
 
@@ -358,11 +348,10 @@ export const ImportPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Role Toggle Switch & Quick Links */}
+        {/* Read-Only Mode & Quick Links */}
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <button
-            onClick={toggleHostMode}
-            title="Toggle between Host Admin mode and Guest Player view"
+          <div
+            title="Active user role determined at initial workbench launch"
             style={{
               backgroundColor: isHostMode ? '#2d3e23' : '#332921',
               color: '#fcf8ee',
@@ -371,11 +360,11 @@ export const ImportPage: React.FC = () => {
               padding: '7px 12px',
               borderRadius: '6px',
               border: `1px solid ${isHostMode ? '#587a3d' : '#574230'}`,
-              cursor: 'pointer',
+              userSelect: 'none',
             }}
           >
             Role: {isHostMode ? 'Host (Full Access)' : 'Player (Restricted)'}
-          </button>
+          </div>
 
           <button
             onClick={() => navigate('/protocol')}

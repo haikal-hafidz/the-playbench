@@ -87,19 +87,6 @@ export const App: React.FC = () => {
           <Route path="/play" element={<PlayerExperiencePage />} />
           <Route path="/play/:code" element={<PlayerExperiencePage />} />
 
-          {/* Explicit Switch Role Route */}
-          <Route
-            path="/select-role"
-            element={
-              <RoleSelectionScreen
-                onSelectRole={(role) => {
-                  setUserRole(role);
-                  setSelectedRole(role);
-                }}
-              />
-            }
-          />
-
           {/* Host Experience (Protected from Player role) */}
           <Route
             path="/host/session"
