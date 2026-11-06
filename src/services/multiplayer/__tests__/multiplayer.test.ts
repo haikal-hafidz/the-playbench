@@ -216,15 +216,15 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       expect(finalSession?.winning_game_id).toBe('memory-match');
     });
 
-    it('protects bundled games and active session games from deletion', async () => {
+    it('allows deleting both sample/bundled games and user-created games while protecting active sessions', async () => {
       await gameRegistry.init();
 
-      // 1. Bundled games cannot be deleted
-      const bundledCheck = await gameRegistry.canDeleteGame(BUNDLED_GAMES[0].id);
-      expect(bundledCheck.safe).toBe(false);
-      expect(bundledCheck.reason).toMatch(/bundled workshop games cannot be deleted/i);
+      // 1. Sample/bundled games CAN be deleted when not in an active session
+      const sampleGameId = BUNDLED_GAMES[0].id;
+      const initialBundledCheck = await gameRegistry.canDeleteGame(sampleGameId);
+      expect(initialBundledCheck.safe).toBe(true);
 
-      // 2. Active session game protection
+      // 2. Active session game protection applies to any game (sample or user-created)
       const customGame: Game = {
         id: 'custom-trivia-game',
         title: 'Custom Trivia',
@@ -250,6 +250,20 @@ describe('Stage 7 Multiplayer Session Service & Game Selection Voting', () => {
       const activeSessionCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
       expect(activeSessionCheck.safe).toBe(false);
       expect(activeSessionCheck.reason).toMatch(/active multiplayer session/i);
+
+      // 3. User-created game CAN be deleted once active session is cleared
+      multiplayerService.clearActiveSession();
+      const clearedCheck = await gameRegistry.canDeleteGame('custom-trivia-game');
+      expect(clearedCheck.safe).toBe(true);
+
+      await gameRegistry.deleteGame('custom-trivia-game');
+      const retrievedCustom = await gameRegistry.getGameById('custom-trivia-game');
+      expect(retrievedCustom).toBeUndefined();
+
+      // 4. Sample game can be deleted and remains deleted across re-initialization
+      await gameRegistry.deleteGame(sampleGameId);
+      const allGamesAfterDelete = await gameRegistry.getAllGames();
+      expect(allGamesAfterDelete.find((g) => g.id === sampleGameId)).toBeUndefined();
     });
   });
 });

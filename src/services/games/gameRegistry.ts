@@ -82,10 +82,18 @@ export class GameRegistry {
     if (this.initialized) return;
 
     try {
+      const deletedBundledRaw = localStorage.getItem('playbench_deleted_bundled_ids');
+      const deletedBundledIds = new Set<string>(deletedBundledRaw ? JSON.parse(deletedBundledRaw) : []);
+
       const existing = await playbenchDB.getAllGames();
       const existingMap = new Map(existing.map((g) => [g.id, g]));
 
       for (const bundled of BUNDLED_GAMES) {
+        // If the game was intentionally deleted by the Host, do not re-seed it
+        if (deletedBundledIds.has(bundled.id)) {
+          continue;
+        }
+
         if (!existingMap.has(bundled.id)) {
           await playbenchDB.saveGame(bundled);
         } else {
@@ -176,11 +184,6 @@ export class GameRegistry {
       return { safe: false, reason: 'Game not found in registry.' };
     }
 
-    // Bundled games cannot be deleted to preserve core platform experience
-    if (game.packageOrigin === 'bundled') {
-      return { safe: false, reason: 'Bundled workshop games cannot be deleted.' };
-    }
-
     // Check active projects referencing this game
     try {
       const projects = await playbenchDB.getAllProjects();
@@ -225,6 +228,22 @@ export class GameRegistry {
     if (!check.safe) {
       throw new Error(check.reason || 'Cannot delete game.');
     }
+
+    const game = await this.getGameById(id);
+    if (game && game.packageOrigin === 'bundled') {
+      // Record in deleted bundled IDs so it is not re-seeded on next init
+      try {
+        const deletedBundledRaw = localStorage.getItem('playbench_deleted_bundled_ids');
+        const deletedBundledIds: string[] = deletedBundledRaw ? JSON.parse(deletedBundledRaw) : [];
+        if (!deletedBundledIds.includes(id)) {
+          deletedBundledIds.push(id);
+          localStorage.setItem('playbench_deleted_bundled_ids', JSON.stringify(deletedBundledIds));
+        }
+      } catch {
+        // Continue
+      }
+    }
+
     await playbenchDB.deleteGame(id);
   }
 }

@@ -472,33 +472,31 @@ export const CollectionPage: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Safe Deletion trigger button */}
-                  {game.packageOrigin !== 'bundled' && (
-                    <button
-                      title="Safely Delete Game"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeletingGame(game);
-                        setDeleteConfirmationText('');
-                        setDeleteError(null);
-                      }}
-                      style={{
-                        marginLeft: 'auto',
-                        background: 'none',
-                        border: 'none',
-                        color: '#991b1b',
-                        cursor: 'pointer',
-                        padding: '2px 4px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '2px',
-                        fontSize: '11px',
-                      }}
-                    >
-                      <Trash2 size={12} />
-                      <span>Delete</span>
-                    </button>
-                  )}
+                  {/* Safe Deletion trigger button (Host-only, available for all games including sample games) */}
+                  <button
+                    title="Safely Delete Game"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeletingGame(game);
+                      setDeleteConfirmationText('');
+                      setDeleteError(null);
+                    }}
+                    style={{
+                      marginLeft: 'auto',
+                      background: 'none',
+                      border: 'none',
+                      color: '#991b1b',
+                      cursor: 'pointer',
+                      padding: '2px 4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '2px',
+                      fontSize: '11px',
+                    }}
+                  >
+                    <Trash2 size={12} />
+                    <span>Delete</span>
+                  </button>
                 </div>
               </CraftCard>
             ))}
