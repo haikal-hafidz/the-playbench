@@ -11,7 +11,10 @@ import {
   LogOut,
   Vote,
   Gamepad2,
-  Crown
+  Crown,
+  Trophy,
+  History,
+  RotateCcw
 } from 'lucide-react';
 import { multiplayerService } from '../../services/multiplayer';
 import { gameRegistry } from '../../services/games/gameRegistry';
@@ -21,6 +24,7 @@ import {
   SessionParticipant,
   GameSelectionVotingState,
   GameVote,
+  GameLeaderboard,
 } from '../../types/multiplayer';
 
 export const HostSessionPage: React.FC = () => {
@@ -33,11 +37,11 @@ export const HostSessionPage: React.FC = () => {
   const [participants, setParticipants] = useState<SessionParticipant[]>([]);
   const [votes, setVotes] = useState<GameVote[]>([]);
   const [votingState, setVotingState] = useState<GameSelectionVotingState | null>(null);
+  const [sessionHistory, setSessionHistory] = useState<GameLeaderboard[]>([]);
 
   const [copiedLink, setCopiedLink] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load registered games
   useEffect(() => {
     gameRegistry.getAllGames().then((all) => {
       setGames(all);
@@ -53,6 +57,7 @@ export const HostSessionPage: React.FC = () => {
         setParticipants(data.participants);
         setVotes(data.votes);
         setVotingState(data.votingState);
+        setSessionHistory(data.history || []);
       }
     }
   };
@@ -60,8 +65,11 @@ export const HostSessionPage: React.FC = () => {
   useEffect(() => {
     refreshSessionData();
 
-    const unsubscribe = multiplayerService.subscribe(() => {
+    const unsubscribe = multiplayerService.subscribe((event) => {
       refreshSessionData();
+      if (event.type === 'PARTICIPANT_JOINED' && event.payload?.participants) {
+        setParticipants(event.payload.participants);
+      }
     });
 
     return () => {
@@ -72,12 +80,15 @@ export const HostSessionPage: React.FC = () => {
   const handleCreateSession = async () => {
     setError(null);
     try {
+      if (!hostName || hostName.trim().length === 0) {
+        throw new Error('Host must enter a display name to create a session.');
+      }
       if (games.length === 0) {
         throw new Error('No games available in registry to play.');
       }
       const { session, hostParticipant } = await multiplayerService.createSession(
         games,
-        hostName
+        hostName.trim()
       );
       setActiveSession(session);
       setParticipants([hostParticipant]);
@@ -108,12 +119,37 @@ export const HostSessionPage: React.FC = () => {
     }
   };
 
-  const handleLeaveOrClose = () => {
-    multiplayerService.clearActiveSession();
+  const handleTriggerFinalRecap = async () => {
+    if (!activeSession) return;
+    try {
+      const updated = await multiplayerService.showFinalSessionRecap(activeSession.id);
+      setActiveSession(updated);
+      refreshSessionData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleReturnToVoting = async () => {
+    if (!activeSession) return;
+    try {
+      const updated = await multiplayerService.returnToLobby(activeSession.id);
+      setActiveSession(updated);
+      refreshSessionData();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleLeaveOrClose = async () => {
+    if (activeSession) {
+      await multiplayerService.closeSession(activeSession.id);
+    }
     setActiveSession(null);
     setParticipants([]);
     setVotes([]);
     setVotingState(null);
+    setSessionHistory([]);
   };
 
   const shareableUrl = activeSession
@@ -155,7 +191,7 @@ export const HostSessionPage: React.FC = () => {
           Host Multiplayer Session
         </h1>
         <p style={{ color: '#b0a695', margin: 0, fontSize: '14px' }}>
-          Launch a shared session for friends. Players vote on which game to play, and the winning game launches into Game Space for everyone!
+          Launch a shared session for friends. Players vote on which game to play, compete with individual game leaderboards, and review final session results!
         </p>
       </div>
 
@@ -206,10 +242,12 @@ export const HostSessionPage: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '13px', color: '#d0c6b6', marginBottom: '6px' }}>
-                Host Display Name
+                Host Display Name <span style={{ color: '#e8c872' }}>*</span>
               </label>
               <input
                 type="text"
+                required
+                maxLength={30}
                 value={hostName}
                 onChange={(e) => setHostName(e.target.value)}
                 placeholder="e.g. Bench Master"
@@ -251,6 +289,144 @@ export const HostSessionPage: React.FC = () => {
               <span>Open Session & Game Selection Lobby</span>
             </button>
           </div>
+        </div>
+      ) : activeSession.status === 'session-recap' ? (
+        /* Final Session Results Recap Screen */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div
+            style={{
+              backgroundColor: '#261e17',
+              border: '2px solid #e8c872',
+              borderRadius: '12px',
+              padding: '24px',
+              boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '16px',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#e8c872', marginBottom: '4px' }}>
+                <Trophy size={20} />
+                <span style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
+                  Session Concluded • Final Recap
+                </span>
+              </div>
+              <h2 style={{ fontFamily: 'var(--font-family-display)', fontSize: '24px', margin: 0 }}>
+                Multiplayer Session {activeSession.code} Results
+              </h2>
+              <p style={{ color: '#b0a695', fontSize: '13px', margin: '4px 0 0 0' }}>
+                Individual game leaderboards preserved using each game's distinct scoring system without mixing incompatible metrics.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={handleReturnToVoting}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: '#1b4731',
+                  color: '#e8c872',
+                  border: '1px solid #2d6a45',
+                  borderRadius: '6px',
+                  padding: '8px 14px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                <RotateCcw size={14} />
+                <span>Return to Voting Lobby</span>
+              </button>
+
+              <button
+                onClick={handleLeaveOrClose}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: '#382218',
+                  color: '#fca5a5',
+                  border: '1px solid #5c2c1c',
+                  borderRadius: '6px',
+                  padding: '8px 14px',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                <LogOut size={14} />
+                <span>End & Close Session</span>
+              </button>
+            </div>
+          </div>
+
+          {/* List of Game Leaderboards */}
+          {sessionHistory.length === 0 ? (
+            <div
+              style={{
+                backgroundColor: '#1f1914',
+                border: '1px solid #3d2f24',
+                borderRadius: '10px',
+                padding: '32px',
+                textAlign: 'center',
+                color: '#b0a695',
+              }}
+            >
+              No games were completed in this session before concluding.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: '20px' }}>
+              {sessionHistory.map((lb) => (
+                <div
+                  key={lb.id}
+                  style={{
+                    backgroundColor: '#1f1914',
+                    border: '1px solid #4a3828',
+                    borderRadius: '10px',
+                    padding: '20px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Gamepad2 size={18} color="#e8c872" />
+                      <h3 style={{ margin: 0, fontSize: '18px', color: '#fcf8ee' }}>{lb.game_title}</h3>
+                    </div>
+                    <span style={{ fontSize: '11px', color: '#b0a695', backgroundColor: '#2d2218', padding: '3px 8px', borderRadius: '4px' }}>
+                      Ranked by {lb.ranking_criterion === 'lowest-score' ? 'Lowest' : 'Highest'} {lb.unit_label}
+                    </span>
+                  </div>
+
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #3d2f24', color: '#e8c872', textAlign: 'left' }}>
+                        <th style={{ padding: '8px', width: '50px' }}>Rank</th>
+                        <th style={{ padding: '8px' }}>Player</th>
+                        <th style={{ padding: '8px', textAlign: 'right' }}>Score / Result</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lb.entries.map((entry) => (
+                        <tr key={entry.participant_id} style={{ borderBottom: '1px solid #281f18' }}>
+                          <td style={{ padding: '8px', fontWeight: 700, color: entry.rank === 1 ? '#e8c872' : '#fcf8ee' }}>
+                            #{entry.rank}
+                          </td>
+                          <td style={{ padding: '8px' }}>{entry.participant_name}</td>
+                          <td style={{ padding: '8px', textAlign: 'right', fontWeight: 600, color: '#e8c872' }}>
+                            {entry.summary || `${entry.score} ${lb.unit_label}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         /* Active session dashboard */
@@ -329,6 +505,27 @@ export const HostSessionPage: React.FC = () => {
                 >
                   {copiedLink ? <CheckCircle size={15} /> : <Share2 size={15} />}
                   <span>{copiedLink ? 'Link Copied!' : 'Copy Invite Link'}</span>
+                </button>
+
+                <button
+                  onClick={handleTriggerFinalRecap}
+                  title="Conclude Session and View Final Results"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: '#261e17',
+                    color: '#e8c872',
+                    border: '1px solid #e8c872',
+                    borderRadius: '6px',
+                    padding: '8px 14px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Trophy size={15} />
+                  <span>Final Recap</span>
                 </button>
 
                 <button
@@ -429,7 +626,6 @@ export const HostSessionPage: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Progress bar */}
                       <div
                         style={{
                           width: '100%',
@@ -546,6 +742,66 @@ export const HostSessionPage: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {/* Session History & Completed Game Leaderboards */}
+            {sessionHistory.length > 0 && (
+              <div
+                style={{
+                  backgroundColor: '#1f1914',
+                  border: '1px solid #3d2f24',
+                  borderRadius: '10px',
+                  padding: '20px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                  <History size={18} color="#e8c872" />
+                  <h3 style={{ margin: 0, fontSize: '17px', color: '#e8c872' }}>
+                    Session Game History & Leaderboards ({sessionHistory.length})
+                  </h3>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {sessionHistory.map((lb) => (
+                    <div
+                      key={lb.id}
+                      style={{
+                        backgroundColor: '#1b1612',
+                        border: '1px solid #3d2f24',
+                        borderRadius: '8px',
+                        padding: '14px 18px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontSize: '15px', fontWeight: 700, color: '#fcf8ee' }}>{lb.game_title}</span>
+                        <span style={{ fontSize: '11px', color: '#86efac', backgroundColor: '#132117', padding: '2px 6px', borderRadius: '4px' }}>
+                          Ranked by {lb.ranking_criterion === 'lowest-score' ? 'Lowest' : 'Highest'} {lb.unit_label}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                        {lb.entries.map((entry) => (
+                          <div
+                            key={entry.participant_id}
+                            style={{
+                              backgroundColor: '#261e17',
+                              border: '1px solid #4a3828',
+                              borderRadius: '6px',
+                              padding: '6px 10px',
+                              fontSize: '12px',
+                            }}
+                          >
+                            <span style={{ color: entry.rank === 1 ? '#e8c872' : '#b0a695', fontWeight: 700 }}>
+                              #{entry.rank}{' '}
+                            </span>
+                            <span style={{ color: '#fcf8ee' }}>{entry.participant_name}: </span>
+                            <strong style={{ color: '#e8c872' }}>{entry.summary || entry.score}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Sidebar: Participants */}

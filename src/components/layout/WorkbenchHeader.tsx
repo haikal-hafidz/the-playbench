@@ -17,20 +17,13 @@ import {
   UserCheck
 } from 'lucide-react';
 import { usePreferences } from '../../hooks/usePreferences';
-import { getUserRole, setUserRole, UserRole } from '../../services/storage/preferences';
+import { getUserRole, UserRole } from '../../services/storage/preferences';
 
 export const WorkbenchHeader: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { preferences, updatePreferences } = usePreferences();
   const [isOnline] = useState(navigator.onLine);
-  const [role, setRoleState] = useState<UserRole>(getUserRole());
-
-  const toggleUserRole = () => {
-    const nextRole: UserRole = role === 'host' ? 'player' : 'host';
-    setUserRole(nextRole);
-    setRoleState(nextRole);
-    window.location.reload();
-  };
+  const [role] = useState<UserRole | null>(getUserRole());
 
   const navItems = role === 'player'
     ? [
@@ -210,10 +203,9 @@ export const WorkbenchHeader: React.FC = () => {
             />
           </div>
 
-          {/* Host vs Player Mode Switch */}
-          <button
-            onClick={toggleUserRole}
-            title={role === 'host' ? 'Host Mode (Owner / Creator) — Click to switch to Player Mode' : 'Player Mode (Public Visitor) — Click to switch to Host Mode'}
+          {/* Read-Only Role Indicator Badge (Role Selection occurs exclusively on Initial Screen) */}
+          <div
+            title={role === 'host' ? 'Host Workbench' : 'Player Experience'}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -225,13 +217,13 @@ export const WorkbenchHeader: React.FC = () => {
               border: role === 'host' ? '1px solid #2d6a45' : '1px solid #7a461e',
               padding: '4px 8px',
               borderRadius: '4px',
-              cursor: 'pointer',
               fontWeight: 600,
+              userSelect: 'none',
             }}
           >
             {role === 'host' ? <Shield size={12} color="#e8c872" /> : <UserCheck size={12} color="#fce3b8" />}
-            <span>{role === 'host' ? 'Host Mode' : 'Player Mode'}</span>
-          </button>
+            <span>{role === 'host' ? 'Host' : 'Player'}</span>
+          </div>
 
           {/* Local IndexedDB status */}
           <div

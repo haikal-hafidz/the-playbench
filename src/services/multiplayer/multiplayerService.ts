@@ -1,14 +1,12 @@
 /**
  * Multiplayer Service & Real-Time Synchronization Engine (Stage 7)
  *
- * Implements multiplayer session lifecycle and dedicated Game Selection Voting:
- * 1. Host creates a session (with a 6-character code).
- * 2. Players join and see the catalog of available games.
- * 3. Each player selects exactly ONE game to vote for.
- * 4. Changing selection replaces their active vote (no duplicates).
- * 5. Votes synchronize in real time across all clients.
- * 6. Closing voting tallies votes, handles ties, confirms winning game.
- * 7. Host starts the winning game and all participants launch into Game Space.
+ * Implements:
+ * 1. Participant Display Names with unique internal IDs and distinct duplicate disambiguation (e.g. "Name (2)").
+ * 2. Dedicated Game Selection Voting: Exactly ONE active vote per player, live updates.
+ * 3. Individual Game Leaderboards: Automatically calculated when each game ends according to that game's
+ *    native ranking rules (e.g. lowest attempts for Number Guess, fewest moves for Memory Match, highest score for points games).
+ * 4. Final Session Results Recap: Preserves individual game results and leaderboards without combining incompatible scores.
  */
 
 import { supabaseService } from '../backup/supabaseClient';
@@ -19,6 +17,9 @@ import {
   GameSelectionVotingState,
   GameVoteTally,
   SessionSettings,
+  GameLeaderboard,
+  GameResultEntry,
+  RankingCriterion,
 } from '../../types/multiplayer';
 import { Game } from '../../types';
 
@@ -31,6 +32,8 @@ export interface StoredSessionData {
   availableGames: Game[];
   votes: GameVote[];
   votingState: GameSelectionVotingState;
+  currentLeaderboard?: GameLeaderboard | null;
+  history: GameLeaderboard[];
 }
 
 export class MultiplayerService {
@@ -107,6 +110,28 @@ export class MultiplayerService {
     return /^[A-Z0-9]{4,8}$/i.test(code.trim());
   }
 
+  /**
+   * Disambiguates duplicate display names by appending an incremental counter (e.g. "Robin (2)").
+   */
+  disambiguateName(desiredName: string, existingParticipants: SessionParticipant[]): string {
+    const base = desiredName.trim().replace(/\s*\(\d+\)$/, '');
+    const activeNames = new Set(
+      existingParticipants
+        .filter((p) => p.is_connected)
+        .map((p) => p.player_name.toLowerCase())
+    );
+
+    if (!activeNames.has(base.toLowerCase())) {
+      return base;
+    }
+
+    let counter = 2;
+    while (activeNames.has(`${base.toLowerCase()} (${counter})`)) {
+      counter++;
+    }
+    return `${base} (${counter})`;
+  }
+
   // -------------------------------------------------------------
   // Session Lifecycle
   // -------------------------------------------------------------
@@ -115,9 +140,14 @@ export class MultiplayerService {
     hostName: string,
     settings: SessionSettings = {}
   ): Promise<{ session: MultiplayerSession; hostParticipant: SessionParticipant }> {
+    if (!hostName || hostName.trim().length === 0) {
+      throw new Error('Host must enter a display name to create a session.');
+    }
+
     const code = this.generateSessionCode();
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}`;
     const hostToken = crypto.randomUUID ? crypto.randomUUID() : `host_${Date.now()}`;
+    const hostId = crypto.randomUUID ? crypto.randomUUID() : `p_${Date.now()}`;
     const now = new Date().toISOString();
 
     const session: MultiplayerSession = {
@@ -130,15 +160,17 @@ export class MultiplayerService {
         votingDurationSeconds: settings.votingDurationSeconds || 60,
         tieBreakerRule: settings.tieBreakerRule || 'random',
       },
+      game_history: [],
       created_at: now,
       updated_at: now,
     };
 
     const hostParticipant: SessionParticipant = {
-      id: crypto.randomUUID ? crypto.randomUUID() : `part_${Date.now()}`,
+      id: hostId,
       session_id: sessionId,
       participant_token: hostToken,
-      player_name: hostName || 'Bench Host',
+      player_name: hostName.trim().slice(0, 30),
+      original_name: hostName.trim().slice(0, 30),
       role: 'host',
       is_connected: true,
       joined_at: now,
@@ -187,6 +219,8 @@ export class MultiplayerService {
       availableGames,
       votes: [],
       votingState: initialVotingState,
+      currentLeaderboard: null,
+      history: [],
     });
 
     this.setupRealtime(sessionId);
@@ -208,7 +242,7 @@ export class MultiplayerService {
       throw new Error('Please enter a display name to join.');
     }
 
-    const trimmedName = playerName.trim().slice(0, 30);
+    const trimmedInputName = playerName.trim().slice(0, 30);
     const session = await this.fetchSessionByCode(cleanCode);
     if (!session) {
       throw new Error(`Session with code "${cleanCode}" was not found or has expired.`);
@@ -221,24 +255,23 @@ export class MultiplayerService {
     const data = this.getSessionData(session.id);
     const existingParticipants = data?.participants || [];
 
-    if (session.settings?.maxPlayers && existingParticipants.length >= session.settings.maxPlayers) {
+    if (session.settings?.maxPlayers && existingParticipants.filter((p) => p.is_connected).length >= session.settings.maxPlayers) {
       throw new Error('This session is full.');
     }
 
-    const duplicate = existingParticipants.find(
-      (p) => p.player_name.toLowerCase() === trimmedName.toLowerCase() && p.is_connected
-    );
-    if (duplicate) {
-      throw new Error(`A player named "${trimmedName}" is already in this session.`);
-    }
+    // Disambiguate duplicate display names clearly (e.g. "Robin" -> "Robin (2)")
+    const finalDisplayName = this.disambiguateName(trimmedInputName, existingParticipants);
 
     const now = new Date().toISOString();
     const participantToken = crypto.randomUUID ? crypto.randomUUID() : `part_${Date.now()}`;
+    const participantId = crypto.randomUUID ? crypto.randomUUID() : `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
     const participant: SessionParticipant = {
-      id: crypto.randomUUID ? crypto.randomUUID() : `p_${Date.now()}`,
+      id: participantId,
       session_id: session.id,
       participant_token: participantToken,
-      player_name: trimmedName,
+      player_name: finalDisplayName,
+      original_name: trimmedInputName,
       role: 'player',
       is_connected: true,
       joined_at: now,
@@ -270,7 +303,7 @@ export class MultiplayerService {
     localStorage.setItem(CURRENT_PARTICIPANT_KEY, JSON.stringify(participant));
 
     this.setupRealtime(session.id);
-    this.broadcast('PARTICIPANT_JOINED', { session, participant });
+    this.broadcast('PARTICIPANT_JOINED', { session, participant, participants: data?.participants || [participant] });
 
     return { session, participant };
   }
@@ -322,10 +355,6 @@ export class MultiplayerService {
   // -------------------------------------------------------------
   // Game Selection Voting System
   // -------------------------------------------------------------
-  /**
-   * Submits or changes a participant's vote for which game to play.
-   * Exactly ONE active vote per participant. Replaces previous vote if changed.
-   */
   async submitGameVote(
     sessionId: string,
     participantId: string,
@@ -344,7 +373,6 @@ export class MultiplayerService {
 
     const now = new Date().toISOString();
 
-    // Check if participant has already voted: replace previous vote
     const existingIndex = data.votes.findIndex((v) => v.participant_id === participantId);
     let voteRecord: GameVote;
 
@@ -366,7 +394,6 @@ export class MultiplayerService {
       data.votes.push(voteRecord);
     }
 
-    // Recalculate real-time tallies
     data.votingState = this.calculateTallies(data.availableGames, data.participants, data.votes);
     this.storeSessionData(sessionId, data);
 
@@ -392,9 +419,6 @@ export class MultiplayerService {
     return { success: true, vote: voteRecord, tally: data.votingState };
   }
 
-  /**
-   * Computes live tallies and detects ties across available games.
-   */
   calculateTallies(
     availableGames: Game[],
     participants: SessionParticipant[],
@@ -460,10 +484,6 @@ export class MultiplayerService {
     };
   }
 
-  /**
-   * Host closes game selection voting.
-   * If there's a tie, breaks the tie deterministically (or accepts override)
-   */
   async closeGameSelectionVoting(
     sessionId: string,
     tieBreakerGameId?: string
@@ -477,12 +497,10 @@ export class MultiplayerService {
     let finalGameId = votingState.winningGameId;
     let finalGameTitle = votingState.winningGameTitle;
 
-    // Handle tie breaking
     if (votingState.isTie) {
       if (tieBreakerGameId && votingState.tiedGameIds.includes(tieBreakerGameId)) {
         finalGameId = tieBreakerGameId;
       } else {
-        // Deterministic tie-breaker: first tied game in list
         finalGameId = votingState.tiedGameIds[0];
       }
       const chosenGame = data.availableGames.find((g) => g.id === finalGameId);
@@ -491,7 +509,6 @@ export class MultiplayerService {
       votingState.winningGameTitle = finalGameTitle;
     }
 
-    // Default to first available game if no votes were cast at all
     if (!finalGameId && data.availableGames.length > 0) {
       finalGameId = data.availableGames[0].id;
       finalGameTitle = data.availableGames[0].title;
@@ -502,6 +519,8 @@ export class MultiplayerService {
     data.votingState = votingState;
     data.session.winning_game_id = finalGameId;
     data.session.winning_game_title = finalGameTitle;
+    data.session.current_game_id = finalGameId;
+    data.session.current_game_title = finalGameTitle;
     data.session.status = 'ready-to-start';
     data.session.updated_at = new Date().toISOString();
 
@@ -535,10 +554,6 @@ export class MultiplayerService {
     return votingState;
   }
 
-  /**
-   * Host starts the winning game.
-   * Signals all connected players to enter the Game Space for that game.
-   */
   async startWinningGame(sessionId: string): Promise<string> {
     const data = this.getSessionData(sessionId);
     if (!data) throw new Error('Session not found');
@@ -548,7 +563,12 @@ export class MultiplayerService {
     }
 
     data.session.status = 'in-progress';
+    data.session.current_game_id = data.session.winning_game_id;
+    data.session.current_game_title = data.session.winning_game_title;
     data.session.updated_at = new Date().toISOString();
+    // Reset current active leaderboard for the new round
+    data.currentLeaderboard = null;
+
     this.storeSessionData(sessionId, data);
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
 
@@ -574,6 +594,208 @@ export class MultiplayerService {
     });
 
     return data.session.winning_game_id;
+  }
+
+  // -------------------------------------------------------------
+  // Individual Game Leaderboards
+  // -------------------------------------------------------------
+  /**
+   * Identifies the ranking criterion based on game properties or title.
+   * Puzzle/attempt/move games use 'lowest-score' (e.g. fewer attempts/moves is better).
+   * High-score/points games use 'highest-score'.
+   */
+  getRankingCriterionForGame(gameId: string, gameTitle: string): { criterion: RankingCriterion; unit: string } {
+    const lowerId = gameId.toLowerCase();
+    const lowerTitle = gameTitle.toLowerCase();
+
+    if (lowerId.includes('guess') || lowerTitle.includes('guess')) {
+      return { criterion: 'lowest-score', unit: 'attempts' };
+    }
+    if (lowerId.includes('memory') || lowerTitle.includes('match') || lowerTitle.includes('memory')) {
+      return { criterion: 'lowest-score', unit: 'moves' };
+    }
+    if (lowerId.includes('solitaire') || lowerTitle.includes('peg')) {
+      return { criterion: 'lowest-score', unit: 'pegs left' };
+    }
+    if (lowerId.includes('speed') || lowerTitle.includes('race') || lowerTitle.includes('time')) {
+      return { criterion: 'fastest-time', unit: 'seconds' };
+    }
+    return { criterion: 'highest-score', unit: 'points' };
+  }
+
+  /**
+   * Sorts game leaderboard entries according to the game's ranking rule.
+   */
+  sortLeaderboardEntries(entries: GameResultEntry[], criterion: RankingCriterion): GameResultEntry[] {
+    const sorted = [...entries].sort((a, b) => {
+      const numA = typeof a.score === 'number' ? a.score : parseFloat(String(a.score)) || 0;
+      const numB = typeof b.score === 'number' ? b.score : parseFloat(String(b.score)) || 0;
+
+      if (criterion === 'lowest-score' || criterion === 'fastest-time') {
+        if (numA !== numB) return numA - numB;
+      } else {
+        if (numA !== numB) return numB - numA;
+      }
+      return new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime();
+    });
+
+    // Assign sequential ranks
+    return sorted.map((entry, index) => ({
+      ...entry,
+      rank: index + 1,
+    }));
+  }
+
+  /**
+   * Records a game's completion result for a participant and synchronizes the game leaderboard.
+   */
+  async recordGameResult(
+    sessionId: string,
+    gameId: string,
+    gameTitle: string,
+    participantId: string,
+    score: number | string,
+    summary: string
+  ): Promise<GameLeaderboard> {
+    const data = this.getSessionData(sessionId);
+    if (!data) throw new Error('Session not found');
+
+    const participant = data.participants.find((p) => p.id === participantId);
+    const participantName = participant ? participant.player_name : 'Player';
+    const now = new Date().toISOString();
+
+    const { criterion, unit } = this.getRankingCriterionForGame(gameId, gameTitle);
+
+    let leaderboard = data.currentLeaderboard;
+    if (!leaderboard || leaderboard.game_id !== gameId) {
+      leaderboard = {
+        id: crypto.randomUUID ? crypto.randomUUID() : `lb_${Date.now()}`,
+        session_id: sessionId,
+        game_id: gameId,
+        game_title: gameTitle,
+        ranking_criterion: criterion,
+        unit_label: unit,
+        entries: [],
+        finalized_at: now,
+      };
+    }
+
+    // Check if participant already has an entry in this game's leaderboard
+    const existingIndex = leaderboard.entries.findIndex((e) => e.participant_id === participantId);
+    const newEntry: GameResultEntry = {
+      rank: 1,
+      participant_id: participantId,
+      participant_name: participantName,
+      score,
+      summary: summary || `${score} ${unit}`,
+      completed_at: now,
+    };
+
+    if (existingIndex >= 0) {
+      leaderboard.entries[existingIndex] = newEntry;
+    } else {
+      leaderboard.entries.push(newEntry);
+    }
+
+    leaderboard.entries = this.sortLeaderboardEntries(leaderboard.entries, criterion);
+    leaderboard.finalized_at = now;
+
+    data.currentLeaderboard = leaderboard;
+    data.session.status = 'game-ended';
+    data.session.updated_at = now;
+
+    // Update history: replace existing entry for this game or append
+    const historyIndex = data.history.findIndex((h) => h.id === leaderboard!.id || (h.game_id === gameId && h.finalized_at === leaderboard!.finalized_at));
+    if (historyIndex >= 0) {
+      data.history[historyIndex] = leaderboard;
+    } else {
+      data.history.push(leaderboard);
+    }
+    data.session.game_history = data.history;
+
+    this.storeSessionData(sessionId, data);
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
+
+    this.broadcast('GAME_LEADERBOARD_UPDATED', {
+      sessionId,
+      leaderboard,
+      status: 'game-ended',
+    });
+
+    return leaderboard;
+  }
+
+  // -------------------------------------------------------------
+  // Session Return to Lobby & Final Session Results Recap
+  // -------------------------------------------------------------
+  /**
+   * Returns session back to voting lobby for the next game round.
+   */
+  async returnToLobby(sessionId: string): Promise<MultiplayerSession> {
+    const data = this.getSessionData(sessionId);
+    if (!data) throw new Error('Session not found');
+
+    const now = new Date().toISOString();
+    data.session.status = 'voting';
+    data.session.winning_game_id = undefined;
+    data.session.winning_game_title = undefined;
+    data.session.current_game_id = undefined;
+    data.session.current_game_title = undefined;
+    data.session.updated_at = now;
+    data.votes = [];
+    data.votingState = {
+      status: 'open',
+      totalVotes: 0,
+      tallies: {},
+      isTie: false,
+      tiedGameIds: [],
+    };
+    data.currentLeaderboard = null;
+
+    this.storeSessionData(sessionId, data);
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
+
+    this.broadcast('SESSION_RETURNED_TO_LOBBY', { sessionId, session: data.session });
+    return data.session;
+  }
+
+  /**
+   * Finalizes the multiplayer session and switches all clients to the Final Session Results Recap.
+   * All games and their individual leaderboards are preserved without summing incompatible scores.
+   */
+  async showFinalSessionRecap(sessionId: string): Promise<MultiplayerSession> {
+    const data = this.getSessionData(sessionId);
+    if (!data) throw new Error('Session not found');
+
+    const now = new Date().toISOString();
+    data.session.status = 'session-recap';
+    data.session.updated_at = now;
+    data.session.game_history = data.history;
+
+    this.storeSessionData(sessionId, data);
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(data.session));
+
+    this.broadcast('SESSION_RECAP_TRIGGERED', {
+      sessionId,
+      session: data.session,
+      history: data.history,
+    });
+
+    return data.session;
+  }
+
+  /**
+   * Closes the session completely.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const data = this.getSessionData(sessionId);
+    if (data) {
+      data.session.status = 'completed';
+      data.session.updated_at = new Date().toISOString();
+      this.storeSessionData(sessionId, data);
+    }
+    this.broadcast('SESSION_CLOSED', { sessionId });
+    this.clearActiveSession();
   }
 
   // -------------------------------------------------------------
@@ -644,7 +866,10 @@ export class MultiplayerService {
   getSessionData(sessionId: string): StoredSessionData | null {
     try {
       const raw = localStorage.getItem(`playbench_sess_data_${sessionId}`);
-      return raw ? JSON.parse(raw) : null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed.history) parsed.history = [];
+      return parsed;
     } catch {
       return null;
     }
@@ -660,3 +885,7 @@ export class MultiplayerService {
 }
 
 export const multiplayerService = new MultiplayerService();
+
+if (typeof window !== 'undefined') {
+  (window as any).__multiplayerService = multiplayerService;
+}

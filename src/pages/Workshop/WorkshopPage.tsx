@@ -34,7 +34,7 @@ export const WorkshopPage: React.FC = () => {
   const [briefEditText, setBriefEditText] = useState('');
   const [newChecklistLabel, setNewChecklistLabel] = useState('');
   const [newChecklistState, setNewChecklistState] = useState<ChecklistItemState>('required');
-  const [userRole, setUserRole] = useState<'host' | 'player'>(getUserRole());
+  const [userRole, setUserRole] = useState<'host' | 'player'>(getUserRole() === 'player' ? 'player' : 'host');
 
   // Load projects, registered games, and user role
   useEffect(() => {
@@ -50,7 +50,7 @@ export const WorkshopPage: React.FC = () => {
 
   const loadAll = async () => {
     const role = getUserRole();
-    setUserRole(role);
+    setUserRole(role === 'player' ? 'player' : 'host');
     const projList = await workshopService.getAllProjects();
     setProjects(projList);
     const gameList = await gameRegistry.getAllGames();
