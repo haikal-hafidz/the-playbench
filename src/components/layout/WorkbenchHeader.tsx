@@ -23,12 +23,18 @@ export const WorkbenchHeader: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { preferences, updatePreferences } = usePreferences();
   const [isOnline] = useState(navigator.onLine);
-  const [role, setRoleState] = useState<UserRole>(getUserRole());
+  const [role, setRoleState] = useState<UserRole | null>(getUserRole());
 
   const toggleUserRole = () => {
     const nextRole: UserRole = role === 'host' ? 'player' : 'host';
     setUserRole(nextRole);
     setRoleState(nextRole);
+    window.location.reload();
+  };
+
+  const handleReturnToRoleSelection = () => {
+    setUserRole(null);
+    setRoleState(null);
     window.location.reload();
   };
 
@@ -211,27 +217,45 @@ export const WorkbenchHeader: React.FC = () => {
           </div>
 
           {/* Host vs Player Mode Switch */}
-          <button
-            onClick={toggleUserRole}
-            title={role === 'host' ? 'Host Mode (Owner / Creator) — Click to switch to Player Mode' : 'Player Mode (Public Visitor) — Click to switch to Host Mode'}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px',
-              fontSize: '11px',
-              fontFamily: 'var(--font-family-craft)',
-              backgroundColor: role === 'host' ? '#1b4731' : '#3d2514',
-              color: role === 'host' ? '#e8c872' : '#fce3b8',
-              border: role === 'host' ? '1px solid #2d6a45' : '1px solid #7a461e',
-              padding: '4px 8px',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontWeight: 600,
-            }}
-          >
-            {role === 'host' ? <Shield size={12} color="#e8c872" /> : <UserCheck size={12} color="#fce3b8" />}
-            <span>{role === 'host' ? 'Host Mode' : 'Player Mode'}</span>
-          </button>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <button
+              onClick={toggleUserRole}
+              title={role === 'host' ? 'Host Mode — Click to switch to Player Mode' : 'Player Mode — Click to switch to Host Mode'}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11px',
+                fontFamily: 'var(--font-family-craft)',
+                backgroundColor: role === 'host' ? '#1b4731' : '#3d2514',
+                color: role === 'host' ? '#e8c872' : '#fce3b8',
+                border: role === 'host' ? '1px solid #2d6a45' : '1px solid #7a461e',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              {role === 'host' ? <Shield size={12} color="#e8c872" /> : <UserCheck size={12} color="#fce3b8" />}
+              <span>{role === 'host' ? 'Host' : 'Player'}</span>
+            </button>
+            <button
+              onClick={handleReturnToRoleSelection}
+              title="Return to Role Selection Screen"
+              style={{
+                fontSize: '10px',
+                fontFamily: 'var(--font-family-craft)',
+                backgroundColor: '#261e17',
+                color: '#b0a695',
+                border: '1px solid #3d2f24',
+                padding: '4px 6px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+              }}
+            >
+              Switch Role
+            </button>
+          </div>
 
           {/* Local IndexedDB status */}
           <div

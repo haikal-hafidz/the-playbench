@@ -15,7 +15,7 @@ export const HostRouteGuard: React.FC<HostRouteGuardProps> = ({ children }) => {
   const location = useLocation();
 
   if (role !== 'host') {
-    // Redirect player directly to the dedicated Player experience portal
+    // Redirect non-host or unselected roles directly to player portal or home
     return <Navigate to="/play" state={{ from: location }} replace />;
   }
 

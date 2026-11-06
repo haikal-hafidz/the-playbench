@@ -3,6 +3,8 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { HostRouteGuard } from './components/layout/HostRouteGuard';
 import { AppLoadingScreen } from './components/common/AppLoadingScreen';
+import { RoleSelectionScreen } from './components/common/RoleSelectionScreen';
+import { getUserRole, setUserRole, UserRole } from './services/storage/preferences';
 import { DeskPage } from './pages/Desk/DeskPage';
 import { CollectionPage } from './pages/Collection/CollectionPage';
 import { WorkshopPage } from './pages/Workshop/WorkshopPage';
@@ -18,6 +20,7 @@ import { gameRegistry } from './services/games/gameRegistry';
 export const App: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
+  const [selectedRole, setSelectedRole] = useState<UserRole | null>(getUserRole());
 
   const initializeWorkbench = async () => {
     setIsInitializing(true);
@@ -50,12 +53,32 @@ export const App: React.FC = () => {
     );
   }
 
+  // Mandatory Role Selection Screen after loading completes
+  if (!selectedRole) {
+    return (
+      <RoleSelectionScreen
+        onSelectRole={(role) => {
+          setUserRole(role);
+          setSelectedRole(role);
+          if (role === 'player') {
+            window.location.hash = '#/play';
+          } else {
+            window.location.hash = '#/';
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <HashRouter>
       <AppShell>
         <Routes>
-          {/* Public / Shared routes */}
-          <Route path="/" element={<DeskPage />} />
+          {/* Landing route: Player goes to /play, Host goes to / */}
+          <Route
+            path="/"
+            element={selectedRole === 'player' ? <Navigate to="/play" replace /> : <DeskPage />}
+          />
           <Route path="/gamespace" element={<GameSpacePage />} />
           <Route path="/gamespace/:id" element={<GameSpacePage />} />
           <Route path="/protocol" element={<ProtocolPage />} />
@@ -63,6 +86,19 @@ export const App: React.FC = () => {
           {/* Dedicated Player Experience */}
           <Route path="/play" element={<PlayerExperiencePage />} />
           <Route path="/play/:code" element={<PlayerExperiencePage />} />
+
+          {/* Explicit Switch Role Route */}
+          <Route
+            path="/select-role"
+            element={
+              <RoleSelectionScreen
+                onSelectRole={(role) => {
+                  setUserRole(role);
+                  setSelectedRole(role);
+                }}
+              />
+            }
+          />
 
           {/* Host Experience (Protected from Player role) */}
           <Route
